@@ -82,9 +82,17 @@ async function uploadBackup() {
  * 24 saatte bir otomatik yedekleme döngüsünü başlatır.
  * Bot login olduktan sonra bir kez çağrılmalı.
  */
-function startAutoBackup() {
-  setInterval(() => {
-    uploadBackup().catch(() => console.error('[Backup] Upload failed'));
+async function startAutoBackup() {
+  // Bot açılır açılmaz ilk yedeği al
+  await uploadBackup();
+
+  // Sonra her 24 saatte bir yedek al
+  setInterval(async () => {
+    try {
+      await uploadBackup();
+    } catch {
+      console.error('[Backup] Upload failed');
+    }
   }, BACKUP_INTERVAL_MS);
 }
 
