@@ -28,7 +28,7 @@ async function uploadBackup() {
     return;
   }
   if (!fs.existsSync(DB_PATH)) {
-    console.error('[Backup] Upload failed');
+    console.error('[Backup] Upload failed:', err.response?.data || err.message || err);
     return;
   }
 
