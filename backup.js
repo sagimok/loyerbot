@@ -1,5 +1,5 @@
 // ──────────────────────────────────────────────────────────────
-//  backup.js — deathwish.db'yi her 24 saatte bir GitHub'a yükler
+//  backup.js — deathwish.db'yi GitHub'a yedekler
 // ──────────────────────────────────────────────────────────────
 const fs = require('fs');
 const axios = require('axios');
@@ -15,85 +15,114 @@ const BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 saat
 
 let backupInProgress = false;
 
-/**
- * deathwish.db dosyasını GitHub reposuna yükler.
- * Dosya zaten varsa (sha bulunursa) günceller, yoksa oluşturur.
- * Aynı dosya path'i her zaman kullanılır — yeni dosya oluşturulmaz.
- */
 async function uploadBackup() {
   if (backupInProgress) return;
 
+  // Environment kontrolü
   if (!GITHUB_TOKEN || !GITHUB_OWNER || !GITHUB_REPO) {
-    console.error('[Backup] Upload failed');
+    console.error('❌ Eksik GitHub ENV!');
+    console.log({
+      token: !!GITHUB_TOKEN,
+      owner: GITHUB_OWNER,
+      repo: GITHUB_REPO,
+      branch: GITHUB_BRANCH
+    });
     return;
   }
+
+  // DB var mı?
   if (!fs.existsSync(DB_PATH)) {
-    console.error('[Backup] Upload failed:', err.response?.data || err.message || err);
+    console.error('❌ Database bulunamadı:', DB_PATH);
     return;
   }
 
   backupInProgress = true;
+
   try {
     const apiUrl = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${GITHUB_FILE_PATH}`;
+
     const headers = {
       Authorization: `Bearer ${GITHUB_TOKEN}`,
-      Accept: 'application/vnd.github.v3+json',
+      Accept: 'application/vnd.github+json',
     };
 
-    // Var olan dosyanın sha'sını al (varsa) — güncelleme için gerekli.
+    // SHA al (varsa)
     let sha;
+
     const getRes = await axios.get(`${apiUrl}?ref=${GITHUB_BRANCH}`, {
       headers,
       validateStatus: () => true,
       timeout: 15000,
     });
-    if (getRes.status === 200 && getRes.data && getRes.data.sha) {
+
+    if (getRes.status === 200) {
       sha = getRes.data.sha;
+    } else if (getRes.status !== 404) {
+      console.error("❌ GitHub GET Hatası");
+      console.log(getRes.status);
+      console.log(getRes.data);
+      return;
     }
 
-    const content = fs.readFileSync(DB_PATH);
-    const base64Content = content.toString('base64');
+    const base64 = fs.readFileSync(DB_PATH).toString('base64');
 
     const putRes = await axios.put(
       apiUrl,
       {
-        message: `Otomatik yedek - ${new Date().toISOString()}`,
-        content: base64Content,
+        message: `Auto Backup ${new Date().toISOString()}`,
+        content: base64,
         branch: GITHUB_BRANCH,
-        ...(sha ? { sha } : {}),
+        ...(sha ? { sha } : {})
       },
-      { headers, validateStatus: () => true, timeout: 30000 }
+      {
+        headers,
+        validateStatus: () => true,
+        timeout: 30000
+      }
     );
 
-    if (putRes.status !== 200 && putRes.status !== 201) {
-      console.error('[Backup] Upload failed');
-      return;
+    if (putRes.status === 200 || putRes.status === 201) {
+      console.log("✅ Database uploaded to GitHub");
+    } else {
+      console.error("❌ GitHub PUT Hatası");
+      console.log(putRes.status);
+      console.log(putRes.data);
     }
 
-    console.log('✅ Database uploaded to GitHub');
   } catch (err) {
-    console.error('[Backup] Upload failed');
+    console.error("❌ Backup Exception");
+
+    if (err.response) {
+      console.log(err.response.status);
+      console.log(err.response.data);
+    } else {
+      console.log(err.message);
+    }
+
   } finally {
     backupInProgress = false;
   }
 }
 
-/**
- * 24 saatte bir otomatik yedekleme döngüsünü başlatır.
- * Bot login olduktan sonra bir kez çağrılmalı.
- */
 async function startAutoBackup() {
-  // Bot açılır açılmaz ilk yedeği al
+
+  console.log("📦 İlk GitHub yedeği alınıyor...");
   await uploadBackup();
 
-  // Sonra her 24 saatte bir yedek al
   setInterval(async () => {
+
+    console.log("📦 Otomatik GitHub yedeği alınıyor...");
+
     try {
       await uploadBackup();
-    } catch {
-      console.error('[Backup] Upload failed');
+    } catch (err) {
+      console.error(err);
     }
+
   }, BACKUP_INTERVAL_MS);
 }
 
-module.exports = { uploadBackup, startAutoBackup };
+module.exports = {
+  uploadBackup,
+  startAutoBackup
+};
