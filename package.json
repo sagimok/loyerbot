@@ -1,13 +1,17 @@
 {
-  "name": "loyerbot",
+  "name": "deathwish-bot",
   "version": "1.0.0",
-  "description": "Discord bot for Loyer",
+  "description": "DeathWish Discord Bot",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "dependencies": {
-    "discord.js": "^14.15.2",
-    "express": "^4.18.2"
+    "discord.js": "^14.21.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2"
   }
 }
