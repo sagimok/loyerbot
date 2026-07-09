@@ -66,6 +66,7 @@ function initDatabase() {
     CREATE TABLE IF NOT EXISTS market_roles (guildId TEXT, roleId TEXT, price INTEGER, isPremium INTEGER DEFAULT 0, PRIMARY KEY(guildId,roleId));
     CREATE TABLE IF NOT EXISTS level_data (guildId TEXT, userId TEXT, xp INTEGER DEFAULT 0, level INTEGER DEFAULT 0, PRIMARY KEY(guildId,userId));
     CREATE TABLE IF NOT EXISTS tickets (id INTEGER PRIMARY KEY AUTOINCREMENT, guildId TEXT, userId TEXT, channelId TEXT, status TEXT DEFAULT 'open', createdAt TEXT);
+    CREATE TABLE IF NOT EXISTS mod_actions (id INTEGER PRIMARY KEY AUTOINCREMENT, guildId TEXT, userId TEXT, moderatorId TEXT, type TEXT, channelId TEXT, minutes INTEGER DEFAULT 0, reason TEXT, createdAt TEXT);
   `);
   console.log('✅ Veritabanı hazır.');
 }
@@ -106,6 +107,43 @@ function setBoost(gid,uid)             { db.prepare('INSERT OR IGNORE INTO xp_bo
 function addWarn(gid,uid,modId,reason) { db.prepare('INSERT INTO warns(guildId,userId,moderatorId,reason,createdAt)VALUES(?,?,?,?,?)').run(gid,uid,modId,reason,nowTR()); }
 function getWarns(gid,uid)             { return db.prepare('SELECT * FROM warns WHERE guildId=? AND userId=? ORDER BY createdAt DESC').all(gid,uid); }
 function clearWarns(gid,uid)           { db.prepare('DELETE FROM warns WHERE guildId=? AND userId=?').run(gid,uid); }
+
+// ── Moderasyon yetki + geçmiş sistemi ─────────────────────────
+// Ban/Mute/Warn kararını SADECE bu role sahip kişiler (+Administrator) verebilir.
+const MOD_PERMISSION_ROLE_ID = '1524107651510702160';
+// Belirli işlemler (ban/mute/warn/unmute) için ayrı ayrı yetki rolleri.
+// Setup panelinden "Ban Yetkili Rolü", "Mute Yetkili Rolü", "Warn Yetkili Rolü" ile ayarlanır.
+// Bir kişi/rol hem ban hem mute hem warn rolüne aynı anda sahip olabilir (aynı role birden fazla yetki verilebilir).
+// Herhangi biri ayarlanmamışsa, o işlem için eski tek genel rol (MOD_PERMISSION_ROLE_ID) kullanılır (geriye dönük uyumluluk).
+const MOD_ACTION_SETTING_KEYS = {
+  ban:    'ban_mod_role',
+  mute:   'mute_mod_role',
+  warn:   'warn_mod_role',
+  unmute: 'mute_mod_role',
+};
+function canModerateAction(member, action) {
+  if (member.permissions.has(PermissionFlagsBits.Administrator)) return true;
+  const settingKey = MOD_ACTION_SETTING_KEYS[action];
+  const specificRoleId = settingKey ? getSetting(member.guild.id, settingKey) : null;
+  if (specificRoleId) return member.roles.cache.has(specificRoleId);
+  return member.roles.cache.has(MOD_PERMISSION_ROLE_ID);
+}
+function canModerate(member) {
+  if (!member) return false;
+  if (member.permissions.has(PermissionFlagsBits.Administrator)) return true;
+  return member.roles.cache.has(MOD_PERMISSION_ROLE_ID);
+}
+function addModAction(gid,uid,modId,type,channelId,minutes,reason) {
+  db.prepare('INSERT INTO mod_actions(guildId,userId,moderatorId,type,channelId,minutes,reason,createdAt)VALUES(?,?,?,?,?,?,?,?)').run(gid,uid,modId,type,channelId,minutes||0,reason,nowTR());
+}
+function getModHistory(gid,uid) { return db.prepare('SELECT * FROM mod_actions WHERE guildId=? AND userId=? ORDER BY createdAt DESC').all(gid,uid); }
+function getModSummary(gid,uid) {
+  const rows = getModHistory(gid,uid);
+  const warnCount = rows.filter(r=>r.type==='warn').length;
+  const muteCount = rows.filter(r=>r.type==='mute').length;
+  const totalMuteMinutes = rows.filter(r=>r.type==='mute').reduce((a,r)=>a+(r.minutes||0),0);
+  return { rows, warnCount, muteCount, totalMuteMinutes };
+}
 
 function addMsgCount(gid,cid,uid,date) { db.prepare('INSERT OR IGNORE INTO message_counts(guildId,channelId,userId,date,count)VALUES(?,?,?,?,0)').run(gid,cid,uid,date); db.prepare('UPDATE message_counts SET count=count+1 WHERE guildId=? AND channelId=? AND userId=? AND date=?').run(gid,cid,uid,date); }
 function getMsgCount(gid,cid,uid,date) { const r=db.prepare('SELECT count FROM message_counts WHERE guildId=? AND channelId=? AND userId=? AND date=?').get(gid,cid,uid,date); return r?r.count:0; }
@@ -427,6 +465,7 @@ const SLASH_COMMANDS = [
     .addSubcommand(s=>s.setName('mute').setDescription('Sustur').addUserOption(o=>o.setName('kullanici').setDescription('Kullanıcı').setRequired(true)).addIntegerOption(o=>o.setName('dakika').setDescription('Dakika').setRequired(true).setMinValue(1).setMaxValue(43200)).addStringOption(o=>o.setName('sebep').setDescription('Sebep')))
     .addSubcommand(s=>s.setName('unmute').setDescription('Susturmayı kaldır').addUserOption(o=>o.setName('kullanici').setDescription('Kullanıcı').setRequired(true)))
     .addSubcommand(s=>s.setName('warn').setDescription('Uyar').addUserOption(o=>o.setName('kullanici').setDescription('Kullanıcı').setRequired(true)).addStringOption(o=>o.setName('sebep').setDescription('Sebep').setRequired(true)))
+    .addSubcommand(s=>s.setName('gecmis').setDescription('Kullanıcının moderasyon geçmişini göster').addUserOption(o=>o.setName('kullanici').setDescription('Kullanıcı').setRequired(true)))
     .addSubcommand(s=>s.setName('uyarilar').setDescription('Uyarıları gör').addUserOption(o=>o.setName('kullanici').setDescription('Kullanıcı').setRequired(true)))
     .addSubcommand(s=>s.setName('uyari-sil').setDescription('Uyarıları temizle').addUserOption(o=>o.setName('kullanici').setDescription('Kullanıcı').setRequired(true)))
     .addSubcommand(s=>s.setName('temizle').setDescription('Mesaj sil').addIntegerOption(o=>o.setName('adet').setDescription('Adet (1-100)').setRequired(true).setMinValue(1).setMaxValue(100)))
@@ -1597,10 +1636,12 @@ client.on('interactionCreate', async interaction => {
       const member2 = target ? await interaction.guild.members.fetch(target.id).catch(()=>null) : null;
 
       if (sub === 'ban') {
-        if (!interaction.member.permissions.has(PermissionFlagsBits.BanMembers)) return interaction.reply({ephemeral:true,content:'⛔ Ban yetkisi yok.'});
+        if (!canModerateAction(interaction.member,'ban')) return interaction.reply({ephemeral:true,content:'⛔ Ban yetkisi yok.'});
         if (!member2?.bannable) return interaction.reply({ephemeral:true,content:'⛔ Bu üyeyi banlayamıyorum.'});
         await member2.ban({reason});
+        addModAction(gid,target.id,uid,'ban',interaction.channelId,0,reason);
         await sendLog(interaction.guild,'mod_log_channel',new EmbedBuilder().setTitle('🔨 Ban').setColor(0xED4245).addFields({name:'Kullanıcı',value:`${target.tag}`},{name:'Yetkili',value:`${interaction.user.tag}`},{name:'Sebep',value:reason}).setTimestamp());
+        await sendLog(interaction.guild,'punishment_log_channel',new EmbedBuilder().setTitle('🔨 Ceza Aldı: Ban').setColor(0xED4245).addFields({name:'Kullanıcı',value:`<@${target.id}> (${target.tag})`},{name:'Ceza',value:'Ban'},{name:'Sebep',value:reason}).setTimestamp());
         return interaction.reply(`✅ **${target.tag}** banlandı.`);
       }
       if (sub === 'kick') {
@@ -1612,20 +1653,27 @@ client.on('interactionCreate', async interaction => {
       }
       if (sub === 'mute') {
         const mins = interaction.options.getInteger('dakika');
+        if (!canModerateAction(interaction.member,'mute')) return interaction.reply({ephemeral:true,content:'⛔ Mute yetkisi yok.'});
         if (!member2?.moderatable) return interaction.reply({ephemeral:true,content:'⛔ Bu üyeyi muteleyemiyorum.'});
         await member2.timeout(mins*60000,reason);
+        addModAction(gid,target.id,uid,'mute',interaction.channelId,mins,reason);
         await sendLog(interaction.guild,'mod_log_channel',new EmbedBuilder().setTitle('🔇 Mute').setColor(0xFEE75C).addFields({name:'Kullanıcı',value:`${target.tag}`},{name:'Süre',value:`${mins} dk`},{name:'Sebep',value:reason}).setTimestamp());
+        await sendLog(interaction.guild,'punishment_log_channel',new EmbedBuilder().setTitle('🔇 Ceza Aldı: Mute').setColor(0xFEE75C).addFields({name:'Kullanıcı',value:`<@${target.id}> (${target.tag})`},{name:'Ceza',value:`Mute (${mins} dk)`},{name:'Sebep',value:reason}).setTimestamp());
         return interaction.reply(`✅ **${target.tag}** **${mins} dk** susturuldu.`);
       }
       if (sub === 'unmute') {
+        if (!canModerateAction(interaction.member,'unmute')) return interaction.reply({ephemeral:true,content:'⛔ Unmute yetkisi yok.'});
         if (!member2) return interaction.reply({ephemeral:true,content:'⛔ Kullanıcı bulunamadı.'});
         await member2.timeout(null);
         return interaction.reply(`✅ **${target.tag}** susturma kaldırıldı.`);
       }
       if (sub === 'warn') {
+        if (!canModerateAction(interaction.member,'warn')) return interaction.reply({ephemeral:true,content:'⛔ Warn yetkisi yok.'});
         addWarn(gid,target.id,uid,reason);
+        addModAction(gid,target.id,uid,'warn',interaction.channelId,0,reason);
         const warnCount = getWarns(gid,target.id).length;
         await sendLog(interaction.guild,'mod_log_channel',new EmbedBuilder().setTitle('⚠️ Uyarı').setColor(0xFEE75C).addFields({name:'Kullanıcı',value:`${target.tag}`},{name:'Uyarı #',value:`${warnCount}`},{name:'Sebep',value:reason}).setTimestamp());
+        await sendLog(interaction.guild,'punishment_log_channel',new EmbedBuilder().setTitle('⚠️ Ceza Aldı: Uyarı').setColor(0xFEE75C).addFields({name:'Kullanıcı',value:`<@${target.id}> (${target.tag})`},{name:'Ceza',value:`Uyarı (Toplam: ${warnCount})`},{name:'Sebep',value:reason}).setTimestamp());
         return interaction.reply(`⚠️ **${target.tag}** uyarıldı. (Toplam uyarı: **${warnCount}**)`);
       }
       if (sub === 'uyarilar') {
@@ -1636,6 +1684,25 @@ client.on('interactionCreate', async interaction => {
       if (sub === 'uyari-sil') {
         clearWarns(gid,target.id);
         return interaction.reply(`✅ **${target.tag}** tüm uyarıları silindi.`);
+      }
+      if (sub === 'gecmis') {
+        const sum = getModSummary(gid,target.id);
+        if (!sum.rows.length) return interaction.reply(`ℹ️ **${target.tag}** için moderasyon geçmişi bulunamadı.`);
+        const detay = sum.rows.slice(0,10).map(r=>{
+          const tip = r.type==='warn' ? '⚠️ Uyarı' : r.type==='mute' ? `🔇 Mute (${r.minutes} dk)` : '🔨 Ban';
+          return `**${tip}** — <#${r.channelId}> — ${r.reason} *(${r.createdAt})*`;
+        }).join('\n');
+        const embed = new EmbedBuilder()
+          .setTitle(`📁 ${target.tag} — Moderasyon Geçmişi`)
+          .setColor(0x5865F2)
+          .addFields(
+            {name:'⚠️ Toplam Uyarı',value:`${sum.warnCount}`,inline:true},
+            {name:'🔇 Toplam Mute',value:`${sum.muteCount}`,inline:true},
+            {name:'⏱️ Toplam Mute Süresi',value:`${sum.totalMuteMinutes} dk`,inline:true},
+            {name:'📜 Son İşlemler (kanal bilgili)',value:detay||'—'},
+          )
+          .setTimestamp();
+        return interaction.reply({embeds:[embed],ephemeral:true});
       }
       if (sub === 'temizle') {
         const adet = interaction.options.getInteger('adet');
@@ -1764,6 +1831,8 @@ async function sendSetupPanel(interaction) {
       {name:'🎫 Ticket',value:`Kanal: ${fmt('ticket_channel')}\nRol: ${fmtR('ticket_role')}`,inline:true},
       {name:'📊 Seviye',value:`Kanal: ${fmt('level_channel')}`,inline:true},
       {name:'💰 Ekonomi',value:`Başlangıç Coin: **${s.start_coin||'0'}**\nGünlük Ödül: **${s.daily_reward||'100'}**`,inline:true},
+      {name:'⚖️ Mod Log / Ceza Bildirim',value:`Mod Log: ${fmt('mod_log_channel')}\nCeza Bildirim: ${fmt('punishment_log_channel')}`,inline:false},
+      {name:'🛡️ Moderasyon Yetkili Rolleri',value:`Ban: ${fmtR('ban_mod_role')}\nMute: ${fmtR('mute_mod_role')}\nWarn: ${fmtR('warn_mod_role')}\n_(Ayarlanmayan işlem için varsayılan genel yetkili rolü kullanılır)_`,inline:false},
     );
   const menu = new StringSelectMenuBuilder()
     .setCustomId('setup_category')
@@ -1782,6 +1851,10 @@ async function sendSetupPanel(interaction) {
       {label:'🎙️ Ses Logu',value:'log_voice_channel',description:'Ses logu kanalı'},
       {label:'👥 Üye Logu',value:'log_member_channel',description:'Üye katılım/ayrılma logu'},
       {label:'⚖️ Mod Log Kanalı',value:'mod_log_channel',description:'Moderasyon log kanalı'},
+      {label:'📣 Ceza Bildirim Kanalı',value:'punishment_log_channel',description:'Ban/Mute/Uyarı alan kullanıcıların göründüğü kanal'},
+      {label:'🔨 Ban Yetkili Rolü',value:'ban_mod_role',description:'Kimlerin /mod ban kullanabileceğini belirler'},
+      {label:'🔇 Mute Yetkili Rolü',value:'mute_mod_role',description:'Kimlerin /mod mute ve unmute kullanabileceğini belirler'},
+      {label:'⚠️ Warn Yetkili Rolü',value:'warn_mod_role',description:'Kimlerin /mod warn kullanabileceğini belirler'},
       {label:'🎫 Ticket Kanalı',value:'ticket_channel',description:'Ticket paneli kanalı'},
       {label:'🛡️ Ticket Rolü',value:'ticket_role',description:'Ticket erişim rolü'},
       {label:'📊 Seviye Kanalı',value:'level_channel',description:'Seviye atlama mesajı kanalı'},
@@ -1794,7 +1867,7 @@ async function handleSetupInteraction(interaction, key) {
   // Kategori seçimi
   if (key === 'category') {
     const val = interaction.values[0];
-    const isRole = ['welcome_auto_role','ticket_role','mute_role','mod_role','admin_role'].includes(val);
+    const isRole = ['welcome_auto_role','ticket_role','mute_role','mod_role','admin_role','ban_mod_role','mute_mod_role','warn_mod_role'].includes(val);
     if (isRole) {
       const menu2 = new RoleSelectMenuBuilder().setCustomId(`setup_setRole_${val}`).setPlaceholder('Rol seç...');
       return interaction.update({content:`**${val}** için rol seç:`,components:[new ActionRowBuilder().addComponents(menu2)],embeds:[]});
