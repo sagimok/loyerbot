@@ -626,7 +626,7 @@ Merhaba {etiket}! 🌸
 .setColor("#ffb6d9")
 .setDescription(msg)
 .setThumbnail(member.user.displayAvatarURL({ dynamic: true, size: 1024 }))
-.setImage("https://tenor.com/search/code-geass-cc-gifs")
+.setImage("https://media.tenor.com/HWWzri0F5H8AAAAM/pizza-codegeass.gif")
 .setFooter({ text: `DeathWish • ${member.guild.memberCount}. Üye` })
 .setTimestamp();
     await ch.send({ embeds: [embed] });
