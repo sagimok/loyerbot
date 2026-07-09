@@ -18,6 +18,8 @@ const {
 } = require('discord.js');
 const Database = require('better-sqlite3');
 const express  = require('express');
+const { restoreDatabase, DB_PATH } = require('./restore');
+const { startAutoBackup } = require('./backup');
 
 // ──────────────────────────────────────────────────────────────
 //  AYARLAR (.env'den okunur)
@@ -42,23 +44,31 @@ app.listen(PORT, () => console.log(`🌐 Web sunucusu: ${PORT}`));
 // ──────────────────────────────────────────────────────────────
 //  VERİTABANI (SQLite)
 // ──────────────────────────────────────────────────────────────
-const db = new Database(path.join(__dirname, 'deathwish.db'));
-db.exec(`
-  CREATE TABLE IF NOT EXISTS guild_settings (guildId TEXT, key TEXT, value TEXT, PRIMARY KEY(guildId,key));
-  CREATE TABLE IF NOT EXISTS economy (guildId TEXT, userId TEXT, balance INTEGER DEFAULT 0, bank INTEGER DEFAULT 0, PRIMARY KEY(guildId,userId));
-  CREATE TABLE IF NOT EXISTS marriages (guildId TEXT, user1 TEXT, user2 TEXT, marriedAt TEXT, PRIMARY KEY(guildId,user1));
-  CREATE TABLE IF NOT EXISTS rings (guildId TEXT, userId TEXT, PRIMARY KEY(guildId,userId));
-  CREATE TABLE IF NOT EXISTS voice_time (guildId TEXT, userId TEXT, totalSeconds INTEGER DEFAULT 0, PRIMARY KEY(guildId,userId));
-  CREATE TABLE IF NOT EXISTS daily_claims (guildId TEXT, userId TEXT, date TEXT, claimType TEXT, PRIMARY KEY(guildId,userId,date,claimType));
-  CREATE TABLE IF NOT EXISTS daily_counts (guildId TEXT, userId TEXT, date TEXT, claimType TEXT, count INTEGER DEFAULT 0, PRIMARY KEY(guildId,userId,date,claimType));
-  CREATE TABLE IF NOT EXISTS xp_boosts (guildId TEXT, userId TEXT, PRIMARY KEY(guildId,userId));
-  CREATE TABLE IF NOT EXISTS warns (id INTEGER PRIMARY KEY AUTOINCREMENT, guildId TEXT, userId TEXT, moderatorId TEXT, reason TEXT, createdAt TEXT);
-  CREATE TABLE IF NOT EXISTS message_counts (guildId TEXT, channelId TEXT, userId TEXT, date TEXT, count INTEGER DEFAULT 0, PRIMARY KEY(guildId,channelId,userId,date));
-  CREATE TABLE IF NOT EXISTS market_roles (guildId TEXT, roleId TEXT, price INTEGER, isPremium INTEGER DEFAULT 0, PRIMARY KEY(guildId,roleId));
-  CREATE TABLE IF NOT EXISTS level_data (guildId TEXT, userId TEXT, xp INTEGER DEFAULT 0, level INTEGER DEFAULT 0, PRIMARY KEY(guildId,userId));
-  CREATE TABLE IF NOT EXISTS tickets (id INTEGER PRIMARY KEY AUTOINCREMENT, guildId TEXT, userId TEXT, channelId TEXT, status TEXT DEFAULT 'open', createdAt TEXT);
-`);
-console.log('✅ Veritabanı hazır.');
+// NOT: db burada henüz açılmıyor. GitHub'dan restore işlemi bitmeden
+// SQLite açılmasın diye `db`, aşağıdaki initDatabase() içinde atanıyor.
+// initDatabase() çağrısı bu dosyanın en altındaki bootstrap() içinde,
+// restoreDatabase() tamamlandıktan SONRA yapılıyor.
+let db;
+
+function initDatabase() {
+  db = new Database(DB_PATH);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS guild_settings (guildId TEXT, key TEXT, value TEXT, PRIMARY KEY(guildId,key));
+    CREATE TABLE IF NOT EXISTS economy (guildId TEXT, userId TEXT, balance INTEGER DEFAULT 0, bank INTEGER DEFAULT 0, PRIMARY KEY(guildId,userId));
+    CREATE TABLE IF NOT EXISTS marriages (guildId TEXT, user1 TEXT, user2 TEXT, marriedAt TEXT, PRIMARY KEY(guildId,user1));
+    CREATE TABLE IF NOT EXISTS rings (guildId TEXT, userId TEXT, PRIMARY KEY(guildId,userId));
+    CREATE TABLE IF NOT EXISTS voice_time (guildId TEXT, userId TEXT, totalSeconds INTEGER DEFAULT 0, PRIMARY KEY(guildId,userId));
+    CREATE TABLE IF NOT EXISTS daily_claims (guildId TEXT, userId TEXT, date TEXT, claimType TEXT, PRIMARY KEY(guildId,userId,date,claimType));
+    CREATE TABLE IF NOT EXISTS daily_counts (guildId TEXT, userId TEXT, date TEXT, claimType TEXT, count INTEGER DEFAULT 0, PRIMARY KEY(guildId,userId,date,claimType));
+    CREATE TABLE IF NOT EXISTS xp_boosts (guildId TEXT, userId TEXT, PRIMARY KEY(guildId,userId));
+    CREATE TABLE IF NOT EXISTS warns (id INTEGER PRIMARY KEY AUTOINCREMENT, guildId TEXT, userId TEXT, moderatorId TEXT, reason TEXT, createdAt TEXT);
+    CREATE TABLE IF NOT EXISTS message_counts (guildId TEXT, channelId TEXT, userId TEXT, date TEXT, count INTEGER DEFAULT 0, PRIMARY KEY(guildId,channelId,userId,date));
+    CREATE TABLE IF NOT EXISTS market_roles (guildId TEXT, roleId TEXT, price INTEGER, isPremium INTEGER DEFAULT 0, PRIMARY KEY(guildId,roleId));
+    CREATE TABLE IF NOT EXISTS level_data (guildId TEXT, userId TEXT, xp INTEGER DEFAULT 0, level INTEGER DEFAULT 0, PRIMARY KEY(guildId,userId));
+    CREATE TABLE IF NOT EXISTS tickets (id INTEGER PRIMARY KEY AUTOINCREMENT, guildId TEXT, userId TEXT, channelId TEXT, status TEXT DEFAULT 'open', createdAt TEXT);
+  `);
+  console.log('✅ Veritabanı hazır.');
+}
 
 // ── DB yardımcıları ───────────────────────────────────────────
 function getSetting(gid, key)          { const r = db.prepare('SELECT value FROM guild_settings WHERE guildId=? AND key=?').get(gid,key); return r?r.value:null; }
@@ -1826,10 +1836,19 @@ async function startBot() {
     console.log('🔑 Login deneniyor...');
     await client.login(TOKEN);
     console.log('✅ Login başarılı!');
+    // Login başarılı olduktan sonra 24 saatlik otomatik GitHub yedeğini başlat.
+    startAutoBackup();
   } catch (err) {
     console.error('⛔ Login başarısız! 15 sn sonra tekrar denenecek.\nHata:', err?.message||err);
     setTimeout(startBot, 15_000);
   }
 }
 
-startBot();
+// ──────────────────────────────────────────────────────────────
+//  BOOTSTRAP: önce GitHub'dan restore, sonra DB aç, sonra bota gir
+// ──────────────────────────────────────────────────────────────
+(async () => {
+  await restoreDatabase();
+  initDatabase();
+  await startBot();
+})();
