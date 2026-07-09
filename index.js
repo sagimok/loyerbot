@@ -599,9 +599,36 @@ client.on('guildMemberAdd', async member => {
     if (!wCh) return;
     const ch = member.guild.channels.cache.get(wCh);
     if (!ch) return;
-    let msg = getSetting(gid, 'welcome_message') || 'Hoş geldin **{kullanici}**! 🎉 Toplam üye: **{uye_sayisi}**';
-    msg = msg.replace(/{kullanici}/g, member.user.username).replace(/{mention}/g, `<@${member.id}>`).replace(/{uye_sayisi}/g, member.guild.memberCount);
-    const embed = new EmbedBuilder().setTitle('👋 Yeni Üye!').setDescription(msg).setThumbnail(member.user.displayAvatarURL({dynamic:true})).setColor(0x57F287).setTimestamp();
+    let msg = getSetting(gid,'welcome_message') || `
+# ✦・DeathWish'e Hoş Geldin!
+
+Merhaba {etiket}! 🌸
+
+> 💖 DeathWish ailesine katıldığın için teşekkür ederiz.
+> 👥 Seninle birlikte **{uye_sayisi}. üyeye** ulaştık!
+
+╭꒷📌・Kurallarımızı okumayı unutma!
+> <#1524162633228619776>
+
+︰🎨・Kendine özel renk rolünü al!
+> <#1524160412118155335>
+
+₊˚๑ Umarız burada güzel arkadaşlıklar edinir ve keyifli vakit geçirirsin. ✨
+
+╰・İyi eğlenceler! 🤍
+`;
+    msg = msg
+.replace(/{kullanici}/g, member.user.username)
+.replace(/{etiket}/g, `<@${member.id}>`)
+.replace(/{mention}/g, `<@${member.id}>`)
+.replace(/{uye_sayisi}/g, member.guild.memberCount);
+    const embed = new EmbedBuilder()
+.setColor("#ffb6d9")
+.setDescription(msg)
+.setThumbnail(member.user.displayAvatarURL({ dynamic: true, size: 1024 }))
+.setImage("https://tenor.com/search/code-geass-cc-gifs")
+.setFooter({ text: `DeathWish • ${member.guild.memberCount}. Üye` })
+.setTimestamp();
     await ch.send({ embeds: [embed] });
     const dm = getSetting(gid, 'welcome_dm');
     if (dm) await member.send(dm.replace(/{kullanici}/g,member.user.username).replace(/{sunucu}/g,member.guild.name)).catch(()=>{});
