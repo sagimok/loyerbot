@@ -155,8 +155,20 @@ function addMarketRole(gid,rid,price,prem) { db.prepare('INSERT OR REPLACE INTO 
 function removeMarketRole(gid,rid)     { db.prepare('DELETE FROM market_roles WHERE guildId=? AND roleId=?').run(gid,rid); }
 
 function getLevel(gid,uid)             { return db.prepare('SELECT xp,level FROM level_data WHERE guildId=? AND userId=?').get(gid,uid)||{xp:0,level:0}; }
-function addXp(gid,uid,amt)            { db.prepare('INSERT OR IGNORE INTO level_data(guildId,userId,xp,level)VALUES(?,?,0,0)').run(gid,uid); db.prepare('UPDATE level_data SET xp=xp+? WHERE guildId=? AND userId=?').run(amt,gid,uid); const d=getLevel(gid,uid); const needed=(d.level+1)*100; if(d.xp>=needed){db.prepare('UPDATE level_data SET level=level+1,xp=xp-? WHERE guildId=? AND userId=?').run(needed,gid,uid); return{leveled:true,newLevel:d.level+1};} return{leveled:false}; }
+// Seviye başına gereken XP %15 azaltıldı (seviye atlamak daha kolay).
+function addXp(gid,uid,amt)            { db.prepare('INSERT OR IGNORE INTO level_data(guildId,userId,xp,level)VALUES(?,?,0,0)').run(gid,uid); db.prepare('UPDATE level_data SET xp=xp+? WHERE guildId=? AND userId=?').run(amt,gid,uid); const d=getLevel(gid,uid); const needed=Math.round((d.level+1)*100*0.85); if(d.xp>=needed){db.prepare('UPDATE level_data SET level=level+1,xp=xp-? WHERE guildId=? AND userId=?').run(needed,gid,uid); return{leveled:true,newLevel:d.level+1};} return{leveled:false}; }
 function topLevels(gid,n=10)           { return db.prepare('SELECT userId,level,xp FROM level_data WHERE guildId=? ORDER BY level DESC,xp DESC LIMIT ?').all(gid,n); }
+
+// Seviye ödül rolleri: belirli seviyelere ulaşınca otomatik rol verilir.
+const LEVEL_ROLE_REWARDS = {
+  5:  '1524109066929045626',
+  10: '1524109231719190678',
+  20: '1524110815907811609',
+  25: '1524112620976869446',
+  30: '1524885044055773345',
+  40: '1524885000112177203',
+  50: '1524112044796805152',
+};
 
 function getOpenTicket(gid,uid)        { return db.prepare("SELECT * FROM tickets WHERE guildId=? AND userId=? AND status='open'").get(gid,uid); }
 function createTicket(gid,uid,cid)     { db.prepare('INSERT INTO tickets(guildId,userId,channelId,status,createdAt)VALUES(?,?,?,?,?)').run(gid,uid,cid,'open',nowTR()); }
@@ -785,11 +797,20 @@ client.on('messageCreate', async message => {
 
   // ── XP KAZANMA ─────────────────────────────────────────────
   try {
-    const result = addXp(gid, uid, Math.floor(Math.random()*5)+1);
+    const result = addXp(gid, uid, Math.round((Math.floor(Math.random()*5)+1)*1.15));
     if (result.leveled) {
       const lvlCh = getSetting(gid,'level_channel');
       const ch = lvlCh ? message.guild.channels.cache.get(lvlCh) : message.channel;
       if (ch) ch.send(`🎉 <@${uid}> seviye atladı! Yeni seviye: **${result.newLevel}** 🏆`).catch(()=>{});
+      const rewardRoleId = LEVEL_ROLE_REWARDS[result.newLevel];
+      if (rewardRoleId) {
+        try {
+          const member = message.member || await message.guild.members.fetch(uid);
+          if (member && !member.roles.cache.has(rewardRoleId)) {
+            await member.roles.add(rewardRoleId);
+          }
+        } catch (e) { console.error('Seviye rol ödülü verilemedi:', e); }
+      }
     }
   } catch {}
 
@@ -922,6 +943,32 @@ client.on('messageCreate', async message => {
     addBalance(gid, target.id, amt);
     const label = OWNER_LABEL[uid] || 'Owner';
     return message.reply(`👑 ${label} — <@${target.id}> kullanıcısına **${amt}** coin verildi.`);
+  }
+
+  // ── XP VER (OWNER) ─────────────────────────────────────────
+  if (txt.startsWith('!xp-ver')) {
+    if (!OWNERS.includes(uid)) return message.reply('⛔ Sadece bot sahipleri.');
+    const target = message.mentions.users.first();
+    const parts  = message.content.trim().split(/\s+/);
+    const amt    = parseInt(parts[parts.length-1]);
+    if (!target||isNaN(amt)||amt<=0) return message.reply('Kullanım: `!xp-ver @hedef <miktar>`');
+    const result = addXp(gid, target.id, amt);
+    const label = OWNER_LABEL[uid] || 'Owner';
+    let reply = `👑 ${label} — <@${target.id}> kullanıcısına **${amt}** XP verildi.`;
+    if (result.leveled) {
+      reply += `\n🎉 <@${target.id}> seviye atladı! Yeni seviye: **${result.newLevel}** 🏆`;
+      const rewardRoleId = LEVEL_ROLE_REWARDS[result.newLevel];
+      if (rewardRoleId) {
+        try {
+          const member = message.guild.members.cache.get(target.id) || await message.guild.members.fetch(target.id);
+          if (member && !member.roles.cache.has(rewardRoleId)) {
+            await member.roles.add(rewardRoleId);
+            reply += `\n🏆 Seviye ödül rolü verildi.`;
+          }
+        } catch (e) { console.error('Seviye rol ödülü verilemedi:', e); }
+      }
+    }
+    return message.reply(reply);
   }
 
   // ── SIRALAMA ───────────────────────────────────────────────
