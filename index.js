@@ -266,7 +266,7 @@ const LOL_RESPONSES = {
 const SLASH_COMMANDS = [
   new SlashCommandBuilder().setName('setup').setDescription('Bot ayar panelini aç').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('yardim').setDescription('Komut rehberi'),
-  new SlashCommandBuilder().setName('mod').setDescription('Moderasyon').setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
+  new SlashCommandBuilder().setName('mod').setDescription('Moderasyon')
     .addSubcommand(s=>s.setName('ban').setDescription('Ban').addUserOption(o=>o.setName('kullanici').setDescription('Kullanıcı').setRequired(true)).addStringOption(o=>o.setName('sebep').setDescription('Sebep')))
     .addSubcommand(s=>s.setName('kick').setDescription('Kick').addUserOption(o=>o.setName('kullanici').setDescription('Kullanıcı').setRequired(true)).addStringOption(o=>o.setName('sebep').setDescription('Sebep')))
     .addSubcommand(s=>s.setName('mute').setDescription('Sustur').addUserOption(o=>o.setName('kullanici').setDescription('Kullanıcı').setRequired(true)).addIntegerOption(o=>o.setName('dakika').setDescription('Dakika').setRequired(true).setMinValue(1).setMaxValue(43200)).addStringOption(o=>o.setName('sebep').setDescription('Sebep')))
