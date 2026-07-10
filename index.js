@@ -368,6 +368,10 @@ client.on('guildMemberAdd', async member => {
     if (!wCh) return;
     const ch = member.guild.channels.cache.get(wCh);
     if (!ch) return;
+    const WELCOME_GIF        = 'https://media.tenor.com/fW0VI-KoR3QAAAAM/pizza-eating.gif';
+    const WELCOME_RULES_CH   = '1524162633228619776';
+    const WELCOME_COLOR_CH   = '1524160412118155335';
+
     let msg = getSetting(gid,'welcome_message') || `
 # ✦・DeathWish'e Hoş Geldin!
 
@@ -377,6 +381,9 @@ Merhaba {etiket}! 🌸
 > 👥 Seninle birlikte **{uye_sayisi}. üyeye** ulaştık!
 
 ₊˚๑ Umarız burada güzel arkadaşlıklar edinir ve keyifli vakit geçirirsin. ✨
+
+╭꒷・Kurallarımızı okumayı unutma! <#${WELCOME_RULES_CH}>
+︰・Kendine özel renk rolünü al! <#${WELCOME_COLOR_CH}>
 
 ╰・İyi eğlenceler! 🤍
 `;
@@ -389,6 +396,7 @@ Merhaba {etiket}! 🌸
       .setColor('#ffb6d9')
       .setDescription(msg)
       .setThumbnail(member.user.displayAvatarURL({ size: 256 }))
+      .setImage(WELCOME_GIF)
       .setFooter({ text: `DeathWish • ${member.guild.memberCount}. Üye` })
       .setTimestamp();
     await ch.send({ embeds: [embed] });
