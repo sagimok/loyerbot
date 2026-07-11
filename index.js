@@ -3,11 +3,13 @@
 // ║  • Ticket, Moderasyon, OwO filtre                           ║
 // ║  • Kullanıcı bazlı /yetkiver sistemi (yeni)                 ║
 // ║  • Ekonomi/Seviye/Ses/Sohbet/YazıOyunu KALDIRILDI           ║
+// ║  • WatchDog v1 entegre                                      ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 require('dotenv').config();
 const fs   = require('fs');
 const path = require('path');
+const { monitorEventLoopDelay } = require('perf_hooks');
 const {
   Client, GatewayIntentBits, Collection, ActivityType, REST, Routes,
   EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
@@ -327,6 +329,15 @@ const client = new Client({
 });
 
 // ──────────────────────────────────────────────────────────────
+//  🩺 DeathWish WatchDog v1 — Durum Değişkenleri
+// ──────────────────────────────────────────────────────────────
+const loop = monitorEventLoopDelay();
+loop.enable();
+
+let lastHeartbeat = Date.now();
+let lastError = 'Yok';
+
+// ──────────────────────────────────────────────────────────────
 //  LOG YARDIMCISI
 // ──────────────────────────────────────────────────────────────
 async function sendLog(guild, settingKey, embed) {
@@ -341,6 +352,7 @@ async function sendLog(guild, settingKey, embed) {
 // ──────────────────────────────────────────────────────────────
 client.once('ready', async () => {
   console.log(`✅ Bot aktif: ${client.user.tag}`);
+  console.log('🟢 WatchDog aktif.');
   client.user.setPresence({ activities: [{ name: 'DeathWish | /yardim', type: ActivityType.Playing }], status: 'online' });
 
   // Slash komutları kaydet
@@ -1134,19 +1146,71 @@ async function handleSetupInteraction(interaction, key) {
 }
 
 // ──────────────────────────────────────────────────────────────
-//  HATA YÖNETİMİ + GÜVENLİ LOGIN
+//  HATA YÖNETİMİ + WatchDog EVENT HANDLER'LARI (BİRLEŞTİRİLMİŞ)
 // ──────────────────────────────────────────────────────────────
-client.on('shardError',        e     => console.error('🔌 ShardError:', e));
-client.on('error',             e     => console.error('🧨 Client error:', e));
-client.on('warn',              m     => console.warn('⚠️ Warn:', m));
-client.on('resume',            ()    => console.log('🔁 Session resumed'));
-client.on('shardDisconnect',   (ev,id)=> console.warn(`🔌 Shard ${id} bağlantı koptu`));
-client.on('shardReconnecting', id    => console.log(`♻️ Shard ${id} yeniden bağlanıyor...`));
-client.on('shardReady',        id    => console.log(`✅ Shard ${id} hazır`));
+client.on('shardError',        e      => console.error('🔌 ShardError:', e));
+client.on('error',             e      => { lastError = e.message; console.error('🧨 Client error:', e); });
+client.on('warn',              m      => console.warn('⚠️ Warn:', m));
+client.on('resume',            ()     => console.log('🔁 Session resumed'));
+client.on('shardDisconnect',   (ev,id)=> { console.warn(`🔌 Shard ${id} bağlantı koptu`); console.log(ev); });
+client.on('shardReconnecting', id     => console.log(`♻️ Shard ${id} yeniden bağlanıyor...`));
+client.on('shardReady',        id     => { lastHeartbeat = Date.now(); console.log(`✅ Shard ${id} hazır`); });
+client.on('shardResume',       ()     => { lastHeartbeat = Date.now(); console.log('🟢 Discord bağlantısı geri geldi.'); });
 
-process.on('unhandledRejection', r => console.error('UnhandledRejection:', r));
-process.on('uncaughtException',  e => console.error('UncaughtException:', e));
+process.on('unhandledRejection', r => { lastError = r?.message || String(r); console.error('UnhandledRejection:', r); });
+process.on('uncaughtException',  e => { lastError = e.message; console.error('UncaughtException:', e); });
 
+// ──────────────────────────────────────────────────────────────
+//  🩺 WatchDog v1 — 30 Saniyede Bir Durum Raporu
+// ──────────────────────────────────────────────────────────────
+setInterval(() => {
+
+  const mem  = process.memoryUsage().rss / 1024 / 1024;
+  const ping = client.ws.ping;
+
+  console.clear();
+
+  console.log('══════════════════════════════');
+  console.log('🩺 DeathWish Doktor');
+  console.log('══════════════════════════════');
+
+  console.log('Bot:', client.isReady() ? '🟢 Online' : '🔴 Offline');
+
+  console.log('Ping:', ping + ' ms');
+
+  console.log('RAM:', mem.toFixed(1) + ' MB');
+
+  console.log('Event Loop:',
+      (loop.mean / 1e6).toFixed(2) + ' ms');
+
+  console.log('Son Hata:', lastError);
+
+  console.log('Guild:', client.guilds.cache.size);
+
+  console.log('User:', client.users.cache.size);
+
+  if (Date.now() - lastHeartbeat > 60000) {
+    console.log('\n🚨 UYARI!');
+    console.log('60 saniyedir Discord Heartbeat alınamıyor!');
+    console.log('Bot kilitlenmiş veya Gateway bağlantısı kopmuş olabilir.');
+  }
+
+  if (mem > 450)
+    console.log('⚠ RAM kritik seviyede.');
+
+  if (ping > 250)
+    console.log('⚠ Discord pingi yüksek.');
+
+  if ((loop.mean / 1e6) > 100)
+    console.log('⚠ Event Loop yavaşladı.');
+
+  console.log('══════════════════════════════');
+
+}, 30000);
+
+// ──────────────────────────────────────────────────────────────
+//  GÜVENLİ LOGIN
+// ──────────────────────────────────────────────────────────────
 async function startBot() {
   try {
     console.log('🔑 Login deneniyor...');
