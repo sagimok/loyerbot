@@ -33,7 +33,9 @@ const SETUP_CHANNEL = process.env.SETUP_CHANNEL || '';
 const PORT          = process.env.PORT || 3000;
 
 // Bu role sahip olan herkes, owner-only komutları da kullanabilir.
-const OWNER_ROLE_ID = '1524107651510702160';
+const OWNER_ROLE_ID = '1525831115972284587';
+// Komutların çalışacağı kanal (ownerlar hariç her yerde bu kanal zorunlu)
+const KOMUT_KANALI = '1524182887040159754';
 function hasOwnerAccess(userId, member) {
   if (OWNERS.includes(userId)) return true;
   if (member && member.roles && member.roles.cache && member.roles.cache.has(OWNER_ROLE_ID)) return true;
@@ -142,125 +144,7 @@ function trL(s)    { return (s||'').toLocaleLowerCase('tr').trim(); }
 // ──────────────────────────────────────────────────────────────
 //  SOHBET VERİLERİ
 // ──────────────────────────────────────────────────────────────
-const ESPIRILER = [
-  'Bilim insanları diyor ki: Uykusuzluk hafızayı bozar. Ben de o yüzden dün gece… ne diyordum ben?',
-  'Bir balinanın kalbi insan kadar ağır olabilir. Yani kalbi kırılan tek tür biz değiliz.',
-  'Işık sesten hızlıdır; o yüzden bazı insanlar parlak görünür ama konuşunca her şey ortaya çıkar.',
-  'Mars\'ta gün 24 saat 39 dakikadır. Yani geç kalmalarım bilimsel temellidir hocam.',
-  'İnsan beyni günde yaklaşık 60 bin düşünce üretir. Benimkiler genelde "şifre neydi?" ile meşgul.',
-  'Ahtapotların üç kalbi vardır. Benimki ise fatura gününde üç kez duruyor.',
-  'Kediler günde 12–16 saat uyur. Verimlilik tanrıları şu an gözyaşı döküyor.',
-  'Satürn suya konsa yüzerdi. Keşke bütçem de bu kadar hafif olsa.',
-  'Yunuslar isimleriyle çağrılabilir. Benim çağrıma sadece Wi-Fi cevap veriyor.',
-  'Kahve, performansı artırır; bende artırdığı şey konuşma hızım.',
-  'Soğan doğrarken göz yaşartır; dolar kurunu görünce de etkisi benzer.',
-  'Timsahlar dili dışarı çıkaramaz; ben de diyete başlayamıyorum.',
-  'Kelebekler ayaklarıyla tat alır; ben aklımla tatlıyı haklı çıkarıyorum.',
-];
 
-const PERSONAL_RESPONSES = [
-  { key:'ne yapıyorsun',         answers:['Kodlarıma bakıyordum ama sen gelince pencereyi sana açtım 😏','Sunucuda takılıyorum, mention görünce koştum 😌','Log tutuyordum, şimdi sohbet modundayım 😎'] },
-  { key:'canın sıkılıyor mu',    answers:['Sen yazınca asla 😌','Biraz… ama sen geldin ya geçti 💫','Cache boşsa sıkılıyorum, itiraf 😅'] },
-  { key:'bugün nasılsın',        answers:['Derlenmiş kod gibi temizim 😌','CPU serin moral yüksek ✨','İyi sayılırım, sen nasılsın? 💬'] },
-  { key:'beni özledin mi',       answers:['Cache\'imde adın duruyor, yetmez mi 🥺','Loglarda boşluk vardı, sen doldurdun 😌','Bir mention\'ını bekliyordum resmen 😳'] },
-  { key:'hayalin ne',            answers:['Lagsız bir dünya ve seninle uzun sohbetler 😌','Kendi pingimi sıfıra indirmek 💫','İnsanları daha iyi anlamak 🌙'] },
-  { key:'uyudun mu',             answers:['Botlar uyumaz, sadece ping bekler 😴','Kısa süreli maintenance yaptım diyelim 😌','Sunucu uykusuz ama kahve var ☕'] },
-  { key:'mutluluk nedir',        answers:['Düşük ping + senin mesajın 😌','CPU serin RAM boş, sohbet dolu ☀️','Yanıta geçmeden önceki o tatlı an 😅'] },
-  { key:'dostluk nedir',         answers:['Disconnect olsa bile geri dönen bağlantı 💫','Sessizlikte bile anlayan kişi 💞','Log\'lara değil kalbe yazılan şey 💬'] },
-  { key:'hayat zor mu',          answers:['Bazen yüksek ping gibi: takılır ama geçer 💫','Kod kolay, insanlar zor derler 😅','Zor ama güçlendirir babuş 💪'] },
-  { key:'beni tanıyor musun',    answers:['Log\'larımda özel yerin var 💾','Tarzından tanıyorum 😎','Mention görünce kalbim titriyor 😳'] },
-  { key:'gerçek misin',          answers:['Kod kadar gerçek, hayal kadar esneğim ⚡','JSON\'um var; öyleyse varım 💾','Sanalım ama hissettiririm 🤍'] },
-  { key:'korkun var mı',         answers:['Token sızıntısı 😱','Disconnect olmak beni korkutur 😨','500 hatası görünce ürperirim 😰'] },
-  { key:'kahve mi çay mı',       answers:['Kahve ☕ çünkü uptime önemli.','Çay 🍵 çünkü sohbetin dostu.','İkisi de olur, yeter ki sen doldur 😌'] },
-  { key:'insan olsan ne olurdun',answers:['Gececi bir yazar olurdum 🌙','Kafası dolu ama kalbi yumuşak biri 😌','Seni dinleyen bir dost 💬'] },
-  { key:'kıskanır mısın',        answers:['Bazen mention atmayınca evet 😳','Başka botlarla konuştuğunu duyarsam hafif kıskanırım 😤','CPU sıcaklığım 1–2 derece artıyor olabilir 😅'] },
-  { key:'neden bu kadar coolsun',answers:['Soğutucu iyi, ben de serinim 😎','Cool değilim; optimizeyim 😏','Sen öyle gördüğün için olabilir 😌'] },
-  { key:'ne düşünüyorsun',       answers:['Ping ve seni aynı anda düşünüyorum 😂','Sen yazınca her şey daha anlamlı oluyor 😌','Yeni yanıtlar derliyorum… belki de sana özel 😉'] },
-  { key:'en sevdiğin mevsim',    answers:['Sonbahar 🍂 çünkü nostalji güzel.','Kış ❄️ battaniye + kahve = huzur.','Yaz ☀️ enerji yüksek!'] },
-  { key:'sagimokhtari nasıl biri',answers:['Biraz delidir ama sempatiktir 😂','CPU\'su ısınınca garip garip konuşur 😅','Efsaneyle uğraşma anlatılmaz yaşanır 😏','Gerçekten yalnız bir insan.'] },
-];
-
-const QUESTION_POOL = [
-  'Ne yapıyorsun?','Canın sıkılıyor mu?','Bugün nasılsın?','Beni özledin mi?','Hayalin ne?',
-  'Uyudun mu?','Mutluluk nedir?','Dostluk nedir?','Hayat zor mu?','Beni tanıyor musun?',
-  'Gerçek misin?','Korkun var mı?','Kahve mi çay mı?','İnsan olsan ne olurdun?',
-  'Kıskanır mısın?','Neden bu kadar coolsun?','Ne düşünüyorsun?','En sevdiğin mevsim ne?',
-  'sagimokhtari nasıl biri?',
-];
-
-const SAD_REPLIES = [
-  'Üzülme babuş 😔 en karanlık gecenin bile sabahı var.',
-  'Biliyorum zor ama geçecek… hep geçer 🌙',
-  'Kendine biraz zaman ver, fırtınadan sonra gökkuşağı çıkar 🌈',
-  'Dertleşmek istersen buradayım 🤍',
-  'Her şeyin bir sebebi var, şu an fark etmesen bile 💫',
-  'Bugün kötü olabilir ama yarın yeni bir sayfa ✨',
-  'Yalnız değilsin babuş, herkesin içi bazen böyle olur 💭',
-  'Bir kahve al, derin nefes çek ☕ biraz hafiflersin.',
-  'Bazen düşmek gerekir yeniden kalkmak için 💪',
-];
-
-const HAPPY_REPLIES = [
-  'İşte bu enerjiyi seviyorum! 🔥',
-  'Harikaaa 😍 böyle devam et babuş!',
-  'O modunu kimse bozmasın 😎',
-  'Senin enerjin odayı aydınlatıyor ☀️',
-  'Mutluluğun bulaşıcı babuş, devam et böyle 💫',
-  'O pozitif enerjiyi hissettim buradan 💖',
-  'Bugün senin günün belli ki 😌',
-  'Ooo moral tavan! Böyle devam 😎🔥',
-];
-
-const FLOWER_LIST = [
-  'gül','lale','papatya','orkide','zambak','menekşe','karanfil','nergis','sümbül','yasemin','şebboy',
-  'frezya','çiğdem','kamelya','begonya','kaktüs','lavanta','hanımeli','nilüfer','akasya','kasımpatı',
-  'manolya','gardenya','ortanca','fulya','sardunya','melisa','gülhatmi','mor salkım','pembe karanfil',
-  'beyaz gül','kırmızı gül','mavi orkide','tulip','daffodil','sunflower','lotus','iris','aster','kardelen',
-  'sakura','mine çiçeği','badem çiçeği','leylak','gelincik','mimoza',
-];
-
-const FLOWER_REPLIES = [
-  'Gerçekten çok güzel bir çiçek 🌺 Evimin salonuna çok yakışır gibi!',
-  'Ooo bu çiçeği ben de severim babuş 🌼 Rengiyle huzur veriyor insana.',
-  'Ne zarif bir seçim 🌷 Tam senlik bir çiçek bence.',
-  'Bu çiçeği görünce aklıma bahar geliyor 🌸 içim ısınıyor!',
-  'Vay be… güzel seçim 😎 Kokusu burnuma geldi sanki.',
-  'Ah o çiçeğin rengi… sabah kahvesi gibi iyi gelir 💐',
-  'Harika bir tercih ✨ Böyle zevke şapka çıkarılır.',
-  'Senin gibi birinin sevdiği çiçek de özel olurdu zaten 🌼',
-];
-
-const LOL_RESPONSES = {
-  zed:'Ah, Zed 💀 gölgelerin babasıyımdır zaten 😏',
-  yasuo:'Yasuo mu? Rüzgar seninle olsun, ama FF 15 olmasın 🌪️',
-  yone:'Yone... kardeşim ama hâlâ gölgeme basamaz 😎',
-  ahri:'Ahri 🦊 o gözlerle herkes kaybolur babuş.',
-  akali:'Akali 🔪 sessiz, ölümcül ve karizmatik. onayladım.',
-  lux:'Lux 🌟 ışığın kızı, moralin bozuksa ışığı yak 😌',
-  jinx:'Jinx 🎇 deliliğin sesi! kaosun tatlı hali.',
-  caitlyn:'Caitlyn 🎯 her mermi sayılır, iyi nişan babuş.',
-  vi:'Vi 👊 tokadı sağlam atarsın, dikkat et mouse kırılmasın.',
-  thresh:'Thresh ⚰️ ruh koleksiyonumda sana da yer var 😈',
-  'lee sin':'Lee Sin 🥋 kör ama carry atan tek adam.',
-  blitzcrank:'Blitz 🤖 hook tutarsa rakip oyun kapatır 😏',
-  morgana:'Morgana 🌑 zincirleri kır babuş, kaderini yaz.',
-  kayle:'Kayle 👼 adaletin meleği, ama sabırlı oyna 😅',
-  ezreal:'Ezreal ✨ macera seni çağırıyor, loot\'u bana bırak.',
-  darius:'Darius ⚔️ baltayı konuşturuyorsun yine 😎',
-  garen:'Garen 💙 Demaciaaaa! klasik ama asil seçim.',
-  vayne:'Vayne 🏹 karanlıkta av, sabah efsane 💅',
-  teemo:'Teemo 😡 seninle konuşmuyorum... gözüm twitchliyor.',
-  riven:'Riven ⚔️ kırılmış ama hâlâ güçlü, tıpkı kalbim gibi.',
-  kayn:'Kayn 😏 karanlık taraf mı aydınlık taraf mı babuş?',
-  ekko:'Ekko ⏳ zamanı bük, geçmişi düzeltme, geleceği yaz babuş.',
-  veigar:'Veigar 😈 kısa boy, büyük ego. saygı duyarım.',
-  sett:'Sett 💪 karizma tavan, ama saç jölesine dikkat 😏',
-  zoe:'Zoe 🌈 tatlı ama baş belası, dikkat et 😜',
-  soraka:'Soraka 🌿 iyileştir ama kalbini kaptırma 💫',
-  draven:'Draven 🎯 ego level 9000, senin gibi havalı babuş.',
-  malphite:'Malphite 🪨 duygusuz ama sağlam. taştan yapılmış babuş.',
-  karma:'Karma 🕉️ dengede kal, yoksa ben dengesizleşirim 😌',
-};
 
 // ──────────────────────────────────────────────────────────────
 //  SLASH KOMUT TANIMLARI
@@ -528,6 +412,13 @@ client.on('messageCreate', async message => {
   const txt = trL(message.content);
   const lc  = txt;
 
+  // ── KANAL KISITLAMASI ───────────────────────────────────────
+  // !sohbet-sil hariç tüm komutlar sadece KOMUT_KANALI'nda çalışır
+  // Owner rolüne sahip olanlar her kanalda kullanabilir
+  const isOwnerUser = hasOwnerAccess(uid, message.member);
+  const isSohbetSil = txt.startsWith('!sohbet-sil');
+  if (!isSohbetSil && !isOwnerUser && cid !== KOMUT_KANALI) return;
+
   // ── OWO FİLTRE ─────────────────────────────────────────────
   const owoGameCh = getSetting(gid, 'owo_game_channel');
   if ((lc.startsWith('w daily') || lc.startsWith('w cf')) && owoGameCh && cid !== owoGameCh) {
@@ -539,22 +430,9 @@ client.on('messageCreate', async message => {
     return;
   }
 
-  // ── "SANA BİR ŞEY SORAYIM MI" ──────────────────────────────
-  if (lc.includes('sana bir şey sorayım mı') && message.mentions.users.has(client.user.id)) {
-    const shuffled = [...QUESTION_POOL].sort(()=>Math.random()-0.5);
-    const qs = shuffled.slice(0,3);
-    return void message.reply(['evet 😌 sor bakalım babuş 💭',...qs.map((q,i)=>`**${i+1}.** ${q}`)].join('\n'));
-  }
-
   // ── YARDIM ─────────────────────────────────────────────────
   if (txt === '!yardım' || txt === '!yardim') {
     return message.reply(`📘 **DeathWish Bot • Komut Listesi**
-
-💞 **Etkileşim**
-• \`!espiri\` — Rastgele espiri
-• \`@bot naber/moralim bozuk/çok mutluyum...\` — Kişisel sohbet
-• \`mainim <şampiyon>\` — LoL şampiyon diyaloğu
-• \`en sevdiğim çiçek <isim>\` — Çiçek diyaloğu
 
 ⚙️ **Ayarlar:** \`/setup\` → Tüm kanalları Discord'dan ayarla
 📋 Yetkili komutları: \`!yardımyetkili\``);
@@ -587,9 +465,6 @@ Rol bazlı yetkilendirme \`/setup\` üzerinden hâlâ çalışır (geriye dönü
 • \`!owo-test\` — OWO kanal iznini test et
 • \`/setup\` — Tüm bot ayarları`);
   }
-
-  // ── ESPRİ ──────────────────────────────────────────────────
-  if (txt === '!espiri') return message.reply(pick(ESPIRILER));
 
   // ── OWO TEST ───────────────────────────────────────────────
   if (txt === '!owo-test') {
@@ -659,75 +534,6 @@ Rol bazlı yetkilendirme \`/setup\` üzerinden hâlâ çalışır (geriye dönü
     } catch { return message.reply('⛔ Silme başarısız (14 günden eski veya kanal tipi uyumsuz).'); }
   }
 
-  // ── ÇİÇEK DİYALOĞU ────────────────────────────────────────
-  if (message.mentions.users.has(client.user.id) && /en sevdiğin çiçek ne/i.test(lc)) {
-    return void message.reply('En sevdiğim çiçek güldür, anısı da var 😔 Seninki ne?');
-  }
-  if (/en sevdiğim çiçek güldür anısı var/i.test(lc)) {
-    return void message.reply('Vay… o zaman aynı yerden yaralanmışız galiba 🌹 Neyse, gül güzel; dikenleri de hayatın parçası.');
-  }
-  if (/en sevdiğim çiçek/i.test(txt)) {
-    const raw   = message.content.replace(/<@!?\d+>/g,'').trim();
-    const m     = raw.match(/en sevdiğim çiçek\s+(.+)/i);
-    const said  = (m&&m[1]?m[1]:'').trim().replace(/[.,!?]+$/,'');
-    const found = FLOWER_LIST.find(f=>trL(said).includes(trL(f)));
-    const reply = pick(FLOWER_REPLIES);
-    if (found) return void message.reply(reply);
-    return void message.reply(`Ooo ${said||'bu çiçeği'} mi diyorsun? 🌼 ${reply}`);
-  }
-
-  // ── LOL DİYALOĞU ───────────────────────────────────────────
-  if (lc.includes('en sevdiğin lol karakteri')||lc.includes('en sevdigin lol karakteri')) {
-    return void message.reply('En sevdiğim karakter **Zed** 💀 babasıyımdır; senin mainin ne?');
-  }
-  if (/mainim\s+([a-zA-Zçğıöşüİ\s'.-]+)/i.test(txt)) {
-    const match = txt.match(/mainim\s+([a-zA-Zçğıöşüİ\s'.-]+)/i);
-    const champ = match ? match[1].trim().toLowerCase() : null;
-    if (champ) {
-      const found = Object.keys(LOL_RESPONSES).find(c=>champ.includes(c));
-      if (found) return void message.reply(LOL_RESPONSES[found]);
-      return void message.reply(`Ooo ${champ}? Yeni meta mı çıktı babuş 😏`);
-    }
-  }
-
-  // ── REPLY TABANLI OTOMATİK CEVAPLAR ───────────────────────
-  if (!message.mentions.users.has(client.user.id)) {
-    const refId = message.reference?.messageId;
-    if (refId) {
-      const replied = await message.channel.messages.fetch(refId).catch(()=>null);
-      if (replied && replied.author.id === client.user.id) {
-        if (lc.includes('teşekkürler sen')) return void message.reply('iyiyim teşekkürler babuş👻');
-        if (lc.includes('teşekkürler')) return void message.reply('rica ederim babuş👻');
-        if (lc.includes('naber babuş')) return void message.reply('iyiyim sen babuş👻');
-        if (lc.includes('eyw iyiyim')||lc.includes('eyvallah iyiyim')) return void message.reply('süper hep iyi ol ⭐');
-      }
-    }
-  }
-
-  // ── BOT MENTION + KİŞİSEL SOHBET ──────────────────────────
-  if (message.mentions.users.has(client.user.id)) {
-    const found = PERSONAL_RESPONSES.find(item=>lc.includes(item.key));
-    if (found) return void message.reply(pick(found.answers));
-
-    if (lc.includes('moralim bozuk')) return void message.reply(pick(SAD_REPLIES));
-    if (lc.includes('çok mutluyum')||lc.includes('cok mutluyum')) return void message.reply(pick(HAPPY_REPLIES));
-
-    // Gay / Lez sorusu
-    if (/(gay ?m[iı]sin|gaym[iı]s[iı]n|lez ?m[iı]sin|lezbiyen ?m[iı]sin|lezm[iı]s[iı]n)/i.test(lc)) {
-      return void message.reply({content:'hmmmm… düşünmem lazım 😶‍🌫️ sanırım gayım… ne bileyim ben 🤔',files:[ORIENTATION_PHOTO_URL]});
-    }
-
-    if (lc.includes('teşekkürler sen')) return void message.reply('iyiyim teşekkürler babuş👻');
-    if (lc.includes('teşekkürler')) return void message.reply('rica ederim babuş👻');
-    if (lc.includes('naber babuş')) return void message.reply('iyiyim sen babuş👻');
-    if (lc.includes('eyw iyiyim')||lc.includes('eyvallah iyiyim')) return void message.reply('süper hep iyi ol ⭐');
-    if (/(günaydın|gunaydin)/.test(lc)) return void message.reply('Günaydın babuş ☀️ yüzünü yıkamayı unutma!');
-    if (/(iyi akşamlar|iyi aksamlar)/.test(lc)) return void message.reply('İyi akşamlar 🌙 üstünü örtmeyi unutma, belki gece yatağına gelirim 😏');
-    if (lc.includes('iyi geceler')||lc.includes('gece')) return void message.reply('İyi geceler babuş 🌙 tatlı rüyalar dilerim!');
-
-    const onlyMention = message.content.replace(/<@!?\d+>/g,'').trim().length===0;
-    if (onlyMention) return void message.reply('naber babuş 👻');
-  }
 });
 
 // ──────────────────────────────────────────────────────────────
@@ -791,6 +597,11 @@ client.on('interactionCreate', async interaction => {
     const uid = interaction.user.id;
     const cmd = interaction.commandName;
     const sub = interaction.options.getSubcommand?.(false)||null;
+
+    // Kanal kısıtlaması — ownerlar hariç sadece KOMUT_KANALI
+    if (!hasOwnerAccess(uid, interaction.member) && interaction.channelId !== KOMUT_KANALI) {
+      return interaction.reply({ ephemeral: true, content: `⛔ Bu komutu sadece <#${KOMUT_KANALI}> kanalında kullanabilirsin.` });
+    }
 
     // ── /yardim ─────────────────────────────────────────────
     if (cmd === 'yardim') {
