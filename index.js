@@ -34,6 +34,8 @@ const PORT          = process.env.PORT || 3000;
 
 // Bu role sahip olan herkes, owner-only komutları da kullanabilir.
 const OWNER_ROLE_ID = '1525831115972284587';
+// Botun kurucusu — hiçbir moderasyon işlemi (ban/kick/mute/warn) uygulanamaz.
+const FOUNDER_ID = '923263340325781515';
 // Komutların çalışacağı kanal (ownerlar hariç her yerde bu kanal zorunlu)
 const KOMUT_KANALI = '1524182887040159754';
 function hasOwnerAccess(userId, member) {
@@ -482,6 +484,7 @@ Rol bazlı yetkilendirme \`/setup\` üzerinden hâlâ çalışır (geriye dönü
       const me = message.guild.members.me;
       if (!me.permissions.has(PermissionFlagsBits.BanMembers)) return message.reply('⛔ Gerekli yetki yok: Üyeleri Yasakla');
       if (OWNERS.includes(match[1])) return message.reply('⛔ Owner\'ları banlayamam.');
+      if (match[1] === FOUNDER_ID) return message.reply('⛔ Bu kullanıcıya moderasyon işlemi uygulayamazsın.');
       const mbr = await message.guild.members.fetch(match[1]).catch(()=>null);
       if (mbr && !mbr.bannable) return message.reply('⛔ Bu üyeyi banlayamıyorum (hiyerarşi/izin).');
       await message.guild.members.ban(match[1],{reason:`Owner ban: ${message.author.tag}`});
@@ -512,6 +515,7 @@ Rol bazlı yetkilendirme \`/setup\` üzerinden hâlâ çalışır (geriye dönü
       const me = message.guild.members.me;
       if (!me.permissions.has(PermissionFlagsBits.ModerateMembers)) return message.reply('⛔ Gerekli yetki: Üyeleri Zaman Aşımına Uğrat');
       if (OWNERS.includes(match[1])) return message.reply('⛔ Owner\'ları muteleyemem.');
+      if (match[1] === FOUNDER_ID) return message.reply('⛔ Bu kullanıcıya moderasyon işlemi uygulayamazsın.');
       const mbr = await message.guild.members.fetch(match[1]).catch(()=>null);
       if (!mbr) return message.reply('⛔ Kullanıcı bulunamadı.');
       if (!mbr.moderatable) return message.reply('⛔ Bu üyeyi muteleyemiyorum.');
@@ -627,6 +631,7 @@ client.on('interactionCreate', async interaction => {
 
       if (sub === 'ban') {
         if (!canModerateAction(interaction.member,'ban')) return interaction.reply({ephemeral:true,content:'⛔ Ban yetkisi yok.'});
+        if (target.id === FOUNDER_ID) return interaction.reply({ephemeral:true,content:'⛔ Bu kullanıcıya moderasyon işlemi uygulayamazsın.'});
         if (!member2?.bannable) return interaction.reply({ephemeral:true,content:'⛔ Bu üyeyi banlayamıyorum.'});
         await member2.ban({reason});
         addModAction(gid,target.id,uid,'ban',interaction.channelId,0,reason);
@@ -648,6 +653,7 @@ client.on('interactionCreate', async interaction => {
       }
       if (sub === 'kick') {
         if (!interaction.member.permissions.has(PermissionFlagsBits.KickMembers)) return interaction.reply({ephemeral:true,content:'⛔ Kick yetkisi yok.'});
+        if (target.id === FOUNDER_ID) return interaction.reply({ephemeral:true,content:'⛔ Bu kullanıcıya moderasyon işlemi uygulayamazsın.'});
         if (!member2?.kickable) return interaction.reply({ephemeral:true,content:'⛔ Bu üyeyi kickleyemiyorum.'});
         await member2.kick(reason);
         const logEmbed = new EmbedBuilder().setTitle('👢 Kick').setColor(0xFEE75C)
@@ -662,6 +668,7 @@ client.on('interactionCreate', async interaction => {
       if (sub === 'mute') {
         const mins = interaction.options.getInteger('dakika');
         if (!canModerateAction(interaction.member,'mute')) return interaction.reply({ephemeral:true,content:'⛔ Mute yetkisi yok.'});
+        if (target.id === FOUNDER_ID) return interaction.reply({ephemeral:true,content:'⛔ Bu kullanıcıya moderasyon işlemi uygulayamazsın.'});
         if (!member2?.moderatable) return interaction.reply({ephemeral:true,content:'⛔ Bu üyeyi muteleyemiyorum.'});
         await member2.timeout(mins*60000,reason);
         addModAction(gid,target.id,uid,'mute',interaction.channelId,mins,reason);
@@ -689,6 +696,7 @@ client.on('interactionCreate', async interaction => {
       }
       if (sub === 'warn') {
         if (!canModerateAction(interaction.member,'warn')) return interaction.reply({ephemeral:true,content:'⛔ Warn yetkisi yok.'});
+        if (target.id === FOUNDER_ID) return interaction.reply({ephemeral:true,content:'⛔ Bu kullanıcıya moderasyon işlemi uygulayamazsın.'});
         addWarn(gid,target.id,uid,reason);
         addModAction(gid,target.id,uid,'warn',interaction.channelId,0,reason);
         const warnCount = getWarns(gid,target.id).length;
