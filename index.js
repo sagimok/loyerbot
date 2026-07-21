@@ -44,6 +44,22 @@ function hasOwnerAccess(userId, member) {
   return false;
 }
 
+// ──────────────────────────────────────────────────────────────
+//  🛡️ GUARDIAN SHIELD AYARLARI
+// ──────────────────────────────────────────────────────────────
+// Sunucuya bot ekleyebilecek owner ID'leri (.env'deki OWNERS otomatik dahil)
+const BOT_OWNERS = [
+  ...OWNERS,
+  // Buraya ek owner ID'leri de ekleyebilirsin, örn: "333333333333333333",
+];
+const QUARANTINE_ROLE_ID        = '1529066250817241258';
+const QUARANTINE_LOG_CHANNEL_ID = '1528925797463621722';
+const PROTECTION_LOG_CHANNEL_ID = 'KORUMA_LOG_KANAL_ID_BURAYA'; // yetkisiz bot ekleme logu için ayrı kanal önerilir
+const GUARDIAN_RETRY_COUNT      = 5;
+const GUARDIAN_RETRY_DELAY_MS   = 1200;
+const GUARDIAN_LOG_FRESHNESS_MS = 15000;
+const guardianSleep = ms => new Promise(res => setTimeout(res, ms));
+
 const ORIENTATION_PHOTO_URL = 'https://i.kym-cdn.com/photos/images/newsfeed/003/107/283/053.jpg';
 
 if (!TOKEN) { console.error('⛔ DISCORD_TOKEN bulunamadı!'); process.exit(1); }
@@ -68,6 +84,7 @@ function initDatabase() {
     CREATE TABLE IF NOT EXISTS tickets (id INTEGER PRIMARY KEY AUTOINCREMENT, guildId TEXT, userId TEXT, channelId TEXT, status TEXT DEFAULT 'open', createdAt TEXT);
     CREATE TABLE IF NOT EXISTS mod_actions (id INTEGER PRIMARY KEY AUTOINCREMENT, guildId TEXT, userId TEXT, moderatorId TEXT, type TEXT, channelId TEXT, minutes INTEGER DEFAULT 0, reason TEXT, createdAt TEXT);
     CREATE TABLE IF NOT EXISTS mod_permissions (guildId TEXT, userId TEXT, action TEXT, PRIMARY KEY(guildId,userId,action));
+    CREATE TABLE IF NOT EXISTS guardian_quarantine (guildId TEXT, userId TEXT, roles TEXT, quarantinedAt TEXT, PRIMARY KEY(guildId,userId));
   `);
   console.log('✅ Veritabanı hazır.');
 }
@@ -134,6 +151,10 @@ function getModSummary(gid,uid) {
   return { rows, warnCount, muteCount, totalMuteMinutes };
 }
 
+function saveQuarantineRoles(gid,uid,rolesJson) { db.prepare('INSERT OR REPLACE INTO guardian_quarantine(guildId,userId,roles,quarantinedAt)VALUES(?,?,?,?)').run(gid,uid,rolesJson,nowTR()); }
+function getQuarantineRoles(gid,uid)            { return db.prepare('SELECT roles FROM guardian_quarantine WHERE guildId=? AND userId=?').get(gid,uid); }
+function clearQuarantineRoles(gid,uid)          { db.prepare('DELETE FROM guardian_quarantine WHERE guildId=? AND userId=?').run(gid,uid); }
+
 function getOpenTicket(gid,uid)    { return db.prepare("SELECT * FROM tickets WHERE guildId=? AND userId=? AND status='open'").get(gid,uid); }
 function createTicket(gid,uid,cid) { db.prepare('INSERT INTO tickets(guildId,userId,channelId,status,createdAt)VALUES(?,?,?,?,?)').run(gid,uid,cid,'open',nowTR()); }
 function closeTicket(cid)          { db.prepare("UPDATE tickets SET status='closed' WHERE channelId=?").run(cid); }
@@ -198,6 +219,16 @@ const SLASH_COMMANDS = [
       )),
   new SlashCommandBuilder().setName('yetki-liste')
     .setDescription('Bu sunucuda kime hangi moderasyon yetkisi verildiğini gösterir'),
+  // ── 🛡️ GUARDIAN SHIELD KOMUTLARI ─────────────────────────────
+  new SlashCommandBuilder().setName('karantina')
+    .setDescription('[OWNER] Karantina sistemi yönetimi')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addSubcommand(s=>s.setName('kur')
+      .setDescription('Karantinadakilerin görebileceği TEK kanalı ayarla, diğer tüm kanalları onlara kapat')
+      .addChannelOption(o=>o.setName('kanal').setDescription('Karantinadakilerin görebileceği kanal').setRequired(true)))
+    .addSubcommand(s=>s.setName('kaldir')
+      .setDescription('Bir kullanıcının karantinasını kaldır, eski rollerini geri ver')
+      .addUserOption(o=>o.setName('kullanici').setDescription('Karantinadan çıkarılacak kullanıcı').setRequired(true))),
 ].map(c => c.toJSON());
 
 // ──────────────────────────────────────────────────────────────
@@ -234,6 +265,144 @@ async function sendLog(guild, settingKey, embed) {
 }
 
 // ──────────────────────────────────────────────────────────────
+//  🛡️ GUARDIAN SHIELD FONKSİYONLARI
+// ──────────────────────────────────────────────────────────────
+async function sendGuardianLog(guild, channelId, embed) {
+  if (!channelId) return;
+  try {
+    const ch = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId).catch(() => null);
+    if (ch) await ch.send({ embeds: [embed] }).catch(() => {});
+  } catch (e) { console.error('[GuardianShield] Log gönderilemedi:', e); }
+}
+
+// Audit log'dan botu ekleyen kişiyi bulur (gecikmeye karşı retry ile)
+async function findBotAdder(guild, botId) {
+  for (let attempt = 0; attempt < GUARDIAN_RETRY_COUNT; attempt++) {
+    try {
+      const audit = await guild.fetchAuditLogs({ type: AuditLogEvent.BotAdd, limit: 5 });
+      const entry = audit.entries.find(e =>
+        e.target?.id === botId &&
+        Date.now() - e.createdTimestamp < GUARDIAN_LOG_FRESHNESS_MS + GUARDIAN_RETRY_COUNT * GUARDIAN_RETRY_DELAY_MS
+      );
+      if (entry && entry.executor) return entry.executor;
+    } catch (e) { console.error(`[GuardianShield] Audit log okunamadı (deneme ${attempt + 1}):`, e); }
+    await guardianSleep(GUARDIAN_RETRY_DELAY_MS);
+  }
+  return null;
+}
+
+// Owner listesinde olmayan biri bot eklerse: ekleyeni banla, botu at, logla
+async function handleUnauthorizedBot(member) {
+  const guild = member.guild;
+  const bot = member.user;
+  try {
+    const executor = await findBotAdder(guild, bot.id);
+    const executorId = executor?.id || null;
+    if (executorId && BOT_OWNERS.includes(executorId)) return; // yetkili owner eklemiş, dokunma
+
+    let kickResult = 'Yapılamadı';
+    let banResult  = 'Yapılamadı (yetki sorunu ya da ekleyen bulunamadı)';
+
+    try {
+      if (member.kickable) { await member.kick('Owner olmadığı için yetkisiz bot eklendi.'); kickResult = 'Başarılı'; }
+      else kickResult = 'Başarısız (bot atılamıyor, rol sırası kontrol et)';
+    } catch (e) { console.error('[GuardianShield] Bot atılamadı:', e); kickResult = 'Hata: ' + e.message; }
+
+    if (executorId) {
+      try {
+        const execMember = await guild.members.fetch(executorId).catch(() => null);
+        const canBan = (!execMember || execMember.bannable) && guild.members.me.permissions.has(PermissionFlagsBits.BanMembers);
+        if (canBan) { await guild.members.ban(executorId, { reason: 'Owner olmadığı için otomatik banlandı (yetkisiz bot ekleme).' }); banResult = 'Başarılı'; }
+        else banResult = 'Başarısız (bannable değil / yetki yetersiz)';
+      } catch (e) { console.error('[GuardianShield] Kullanıcı banlanamadı:', e); banResult = 'Hata: ' + e.message; }
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle('🟥 Yetkisiz Bot Ekleme Tespit Edildi')
+      .setColor(0xED4245)
+      .addFields(
+        { name: 'Eklenen Bot', value: `${bot.tag}`, inline: true },
+        { name: 'Bot ID', value: `${bot.id}`, inline: true },
+        { name: 'Ekleyen Kullanıcı', value: executor ? `${executor.tag}` : 'Bulunamadı (audit log gecikmesi)', inline: true },
+        { name: 'Kullanıcı ID', value: executorId ? `${executorId}` : 'Bilinmiyor', inline: true },
+        { name: 'Ban Sonucu', value: banResult, inline: true },
+        { name: 'Bot Atma Sonucu', value: kickResult, inline: true },
+        { name: 'İşlem', value: 'Owner olmadığı için otomatik banlandı.' }
+      )
+      .setTimestamp();
+    await sendGuardianLog(guild, PROTECTION_LOG_CHANNEL_ID, embed);
+  } catch (e) { console.error('[GuardianShield] handleUnauthorizedBot genel hata:', e); }
+}
+
+// Hesap yaşı 14 günden küçükse karantina rolü ver ve logla
+async function handleQuarantineCheck(member) {
+  try {
+    const guild = member.guild;
+    const accountAgeDays = (Date.now() - member.user.createdTimestamp) / 86400000;
+    if (accountAgeDays >= 14) return; // güvenli hesap, dokunma
+    if (!QUARANTINE_ROLE_ID) return;
+
+    // Karantinadan önceki rolleri kaydet (geri vermek için), sonra TEK istekte
+    // hem mevcut rolleri kaldır hem karantina rolünü ver.
+    const previousRoleIds = [...member.roles.cache.keys()].filter(id => id !== guild.id);
+    try {
+      saveQuarantineRoles(guild.id, member.id, JSON.stringify(previousRoleIds));
+      await member.roles.set([QUARANTINE_ROLE_ID], 'Hesap yaşı 14 günden küçük (otomatik karantina).');
+    } catch (e) {
+      console.error('[GuardianShield] Karantina rolü ayarlanamadı:', e);
+    }
+
+    const releaseButton = new ButtonBuilder()
+      .setCustomId(`guardian_release_${member.id}`)
+      .setLabel('🔓 Karantinayı Kaldır')
+      .setStyle(ButtonStyle.Success);
+    const row = new ActionRowBuilder().addComponents(releaseButton);
+
+    const embed = new EmbedBuilder()
+      .setTitle('🟨 Karantinaya Alındı')
+      .setColor(0xFEE75C)
+      .addFields(
+        { name: 'Kullanıcı', value: `${member.user.tag}`, inline: true },
+        { name: 'Kullanıcı ID', value: `${member.user.id}`, inline: true },
+        { name: 'Hesap Oluşturulma Tarihi', value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:F>` },
+        { name: 'Hesap Yaşı', value: `${accountAgeDays.toFixed(1)} gün`, inline: true },
+        { name: 'Sebep', value: 'Hesap yaşı 14 günden küçük.' },
+        { name: 'Not', value: `Eski rolleri (${previousRoleIds.length} adet) kaydedildi, karantina kaldırılınca otomatik geri verilecek.` }
+      )
+      .setTimestamp();
+
+    const chId = QUARANTINE_LOG_CHANNEL_ID;
+    if (chId) {
+      const ch = guild.channels.cache.get(chId) || await guild.channels.fetch(chId).catch(() => null);
+      if (ch) await ch.send({ embeds: [embed], components: [row] }).catch(() => {});
+    }
+  } catch (e) { console.error('[GuardianShield] handleQuarantineCheck genel hata:', e); }
+}
+
+// Karantinayı kaldırır: eski rolleri geri verir (silinmiş roller filtrelenir)
+async function releaseFromQuarantine(guild, targetMember, releasedBy) {
+  const saved = getQuarantineRoles(guild.id, targetMember.id);
+  let roleIds = [];
+  if (saved?.roles) {
+    try { roleIds = JSON.parse(saved.roles).filter(rid => guild.roles.cache.has(rid)); } catch {}
+  }
+  await targetMember.roles.set(roleIds, `Karantina kaldırıldı (${releasedBy?.tag || 'owner'}).`);
+  clearQuarantineRoles(guild.id, targetMember.id);
+
+  const embed = new EmbedBuilder()
+    .setTitle('🟩 Karantina Kaldırıldı')
+    .setColor(0x57F287)
+    .addFields(
+      { name: 'Kullanıcı', value: `${targetMember.user.tag}`, inline: true },
+      { name: 'Kullanıcı ID', value: `${targetMember.id}`, inline: true },
+      { name: 'İşlemi Yapan', value: releasedBy ? `${releasedBy.tag}` : 'Bilinmiyor', inline: true },
+      { name: 'Geri Verilen Rol Sayısı', value: `${roleIds.length}` }
+    )
+    .setTimestamp();
+  await sendGuardianLog(guild, QUARANTINE_LOG_CHANNEL_ID, embed);
+}
+
+// ──────────────────────────────────────────────────────────────
 //  READY
 // ──────────────────────────────────────────────────────────────
 client.once('ready', async () => {
@@ -259,6 +428,7 @@ setInterval(() => {
 // ──────────────────────────────────────────────────────────────
 client.on('guildMemberAdd', async member => {
   try {
+    if (member.user.bot) return; // botlara karşılama mesajı/autorole verilmesin, bunlar Guardian Shield'a düşer
     const gid = member.guild.id;
     const autoRole = getSetting(gid, 'welcome_auto_role');
     if (autoRole) { const role = member.guild.roles.cache.get(autoRole); if (role) await member.roles.add(role).catch(()=>{}); }
@@ -301,6 +471,16 @@ Merhaba {etiket}! 🌸
     const dm = getSetting(gid, 'welcome_dm');
     if (dm) await member.send(dm.replace(/{kullanici}/g,member.user.username).replace(/{sunucu}/g,member.guild.name)).catch(()=>{});
   } catch {}
+});
+
+// ──────────────────────────────────────────────────────────────
+//  🛡️ GUARDIAN SHIELD — Owner Bot Koruması + 14 Gün Karantina
+// ──────────────────────────────────────────────────────────────
+client.on('guildMemberAdd', async member => {
+  try {
+    if (member.user.bot) await handleUnauthorizedBot(member);
+    else await handleQuarantineCheck(member);
+  } catch (e) { console.error('[GuardianShield] guildMemberAdd üst seviye hata:', e); }
 });
 
 // ──────────────────────────────────────────────────────────────
@@ -560,6 +740,28 @@ client.on('interactionCreate', async interaction => {
       if (prefix === 'setup') return handleSetupInteraction(interaction, rest.join('_'));
     }
 
+    // ── 🛡️ GUARDIAN SHIELD: KARANTİNA KALDIRMA BUTONU (panel) ──
+    if (interaction.isButton() && interaction.customId.startsWith('guardian_release_')) {
+      if (!hasOwnerAccess(interaction.user.id, interaction.member)) {
+        return interaction.reply({ ephemeral: true, content: '⛔ Karantina kaldırma sadece ownerlara özeldir.' });
+      }
+      const targetId = interaction.customId.replace('guardian_release_', '');
+      const targetMember = await interaction.guild.members.fetch(targetId).catch(() => null);
+      if (!targetMember) {
+        return interaction.reply({ ephemeral: true, content: '⛔ Kullanıcı sunucuda bulunamadı (ayrılmış olabilir).' });
+      }
+      try {
+        await releaseFromQuarantine(interaction.guild, targetMember, interaction.user);
+        const oldRow = interaction.message.components[0];
+        const disabledButton = ButtonBuilder.from(oldRow.components[0]).setDisabled(true).setLabel('✅ Karantina Kaldırıldı');
+        await interaction.update({ components: [new ActionRowBuilder().addComponents(disabledButton)] });
+      } catch (e) {
+        console.error('[GuardianShield] Karantina kaldırılamadı:', e);
+        return interaction.reply({ ephemeral: true, content: '⛔ Karantina kaldırılırken hata oluştu.' });
+      }
+      return;
+    }
+
     // ── TICKET BUTONLARI ──────────────────────────────────
     if (interaction.isButton()) {
       const id = interaction.customId;
@@ -618,6 +820,8 @@ client.on('interactionCreate', async interaction => {
 • \`/yetkiver kullanici: islem:\` — Kullanıcıya mod yetkisi ver
 • \`/yetkial kullanici: islem:\` — Mod yetkisini geri al
 • \`/yetki-liste\` — Sunucudaki yetki listesi
+• \`/karantina kur kanal:\` — Karantinadakilerin göreceği tek kanalı ayarla [OWNER]
+• \`/karantina kaldir kullanici:\` — Karantinayı kaldır, eski rolleri geri ver [OWNER]
 • \`/setup\` — Bot ayarları (admin)
 
 **! Prefix Komutları:** \`!yardım\` yazarak tam listeyi gör.`});
@@ -885,6 +1089,49 @@ client.on('interactionCreate', async interaction => {
         .setFooter({text:`Toplam ${Object.keys(byUser).length} kullanıcı`})
         .setTimestamp();
       return interaction.reply({embeds:[embed], ephemeral:true});
+    }
+
+    // ── 🛡️ /karantina ────────────────────────────────────────
+    if (cmd === 'karantina') {
+      if (!hasOwnerAccess(uid, interaction.member)) {
+        return interaction.reply({ephemeral:true, content:'⛔ Bu komutu sadece ownerlar kullanabilir.'});
+      }
+
+      if (sub === 'kur') {
+        if (!QUARANTINE_ROLE_ID) return interaction.reply({ephemeral:true, content:'⛔ QUARANTINE_ROLE_ID ayarlanmamış.'});
+        const visibleChannel = interaction.options.getChannel('kanal');
+        await interaction.deferReply({ ephemeral: true });
+        let success = 0, fail = 0;
+        for (const [, channel] of interaction.guild.channels.cache) {
+          if (!channel.permissionOverwrites) continue;
+          try {
+            if (channel.id === visibleChannel.id) {
+              await channel.permissionOverwrites.edit(QUARANTINE_ROLE_ID, { ViewChannel: true });
+            } else {
+              await channel.permissionOverwrites.edit(QUARANTINE_ROLE_ID, { ViewChannel: false });
+            }
+            success++;
+          } catch (e) { fail++; }
+        }
+        setSetting(gid, 'quarantine_visible_channel', visibleChannel.id);
+        return interaction.editReply(
+          `✅ Karantina kanal ayarı tamamlandı.\n📺 Görünür kanal: <#${visibleChannel.id}>\n✅ Başarılı: **${success}** kanal\n⛔ Başarısız: **${fail}** kanal` +
+          (fail > 0 ? '\n\n_Başarısız olanlar için botun o kanallarda "Kanalları Yönet" iznine sahip olduğundan emin ol._' : '')
+        );
+      }
+
+      if (sub === 'kaldir') {
+        const target = interaction.options.getUser('kullanici');
+        const targetMember = await interaction.guild.members.fetch(target.id).catch(() => null);
+        if (!targetMember) return interaction.reply({ephemeral:true, content:'⛔ Kullanıcı sunucuda bulunamadı.'});
+        try {
+          await releaseFromQuarantine(interaction.guild, targetMember, interaction.user);
+          return interaction.reply({ephemeral:true, content:`✅ **${target.tag}** karantinadan çıkarıldı, önceki rolleri geri verildi.`});
+        } catch (e) {
+          console.error('[GuardianShield] /karantina kaldir hata:', e);
+          return interaction.reply({ephemeral:true, content:'⛔ Karantina kaldırılırken hata oluştu.'});
+        }
+      }
     }
 
   } catch (e) {
