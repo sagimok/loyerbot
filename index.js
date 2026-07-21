@@ -52,7 +52,7 @@ const BOT_OWNERS = [
   ...OWNERS,
   // Buraya ek owner ID'leri de ekleyebilirsin, örn: "333333333333333333",
 ];
-const QUARANTINE_ROLE_ID        = '1529066250817241258';
+const QUARANTINE_ROLE_ID        = '1529064742608699473';
 const QUARANTINE_LOG_CHANNEL_ID = '1528925797463621722';
 const PROTECTION_LOG_CHANNEL_ID = 'KORUMA_LOG_KANAL_ID_BURAYA'; // yetkisiz bot ekleme logu için ayrı kanal önerilir
 const GUARDIAN_RETRY_COUNT      = 5;
