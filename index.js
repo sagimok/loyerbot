@@ -1100,8 +1100,17 @@ client.on('interactionCreate', async interaction => {
       if (sub === 'kur') {
         if (!QUARANTINE_ROLE_ID) return interaction.reply({ephemeral:true, content:'⛔ QUARANTINE_ROLE_ID ayarlanmamış.'});
         const visibleChannel = interaction.options.getChannel('kanal');
+        const role = interaction.guild.roles.cache.get(QUARANTINE_ROLE_ID) || await interaction.guild.roles.fetch(QUARANTINE_ROLE_ID).catch(() => null);
+        if (!role) {
+          return interaction.reply({ephemeral:true, content:`⛔ Karantina rolü (\`${QUARANTINE_ROLE_ID}\`) bu sunucuda bulunamadı. Rol ID'sini kontrol et.`});
+        }
+        const botMember = interaction.guild.members.me;
+        if (role.position >= botMember.roles.highest.position && !botMember.permissions.has(PermissionFlagsBits.Administrator)) {
+          return interaction.reply({ephemeral:true, content:`⛔ Karantina rolü (**${role.name}**), botun en yüksek rolüyle aynı seviyede veya üstünde. Sunucu Ayarları → Roller'dan botun rolünü karantina rolünün **üstüne** taşı, sonra tekrar dene.`});
+        }
+
         await interaction.deferReply({ ephemeral: true });
-        let success = 0, fail = 0;
+        let success = 0, fail = 0, firstError = null;
         for (const [, channel] of interaction.guild.channels.cache) {
           if (!channel.permissionOverwrites) continue;
           try {
@@ -1111,12 +1120,16 @@ client.on('interactionCreate', async interaction => {
               await channel.permissionOverwrites.edit(QUARANTINE_ROLE_ID, { ViewChannel: false });
             }
             success++;
-          } catch (e) { fail++; }
+          } catch (e) {
+            fail++;
+            console.error(`[GuardianShield] kanal izni ayarlanamadı (#${channel.name} / ${channel.id}):`, e.message);
+            if (!firstError) firstError = `${e.message} (kanal: #${channel.name})`;
+          }
         }
         setSetting(gid, 'quarantine_visible_channel', visibleChannel.id);
         return interaction.editReply(
           `✅ Karantina kanal ayarı tamamlandı.\n📺 Görünür kanal: <#${visibleChannel.id}>\n✅ Başarılı: **${success}** kanal\n⛔ Başarısız: **${fail}** kanal` +
-          (fail > 0 ? '\n\n_Başarısız olanlar için botun o kanallarda "Kanalları Yönet" iznine sahip olduğundan emin ol._' : '')
+          (fail > 0 ? `\n\n**İlk hata:** \`${firstError}\`\n_Botun sunucu genelinde "Kanalları Yönet" veya "Rolleri Yönet" iznine, ve botun rolünün karantina rolünden yukarıda olduğuna emin ol._` : '')
         );
       }
 
