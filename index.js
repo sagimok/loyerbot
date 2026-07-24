@@ -53,6 +53,7 @@ const BOT_OWNERS = [
   // Buraya ek owner ID'leri de ekleyebilirsin, örn: "333333333333333333",
 ];
 const QUARANTINE_ROLE_ID        = '1529064742608699473';
+const QUARANTINE_MIN_ACCOUNT_AGE_DAYS = 30; // 1 ay — bu yaştan küçük hesaplar otomatik karantinaya alınır
 const QUARANTINE_LOG_CHANNEL_ID = '1528925797463621722';
 const PROTECTION_LOG_CHANNEL_ID = 'KORUMA_LOG_KANAL_ID_BURAYA'; // yetkisiz bot ekleme logu için ayrı kanal önerilir
 const GUARDIAN_RETRY_COUNT      = 5;
@@ -85,6 +86,7 @@ function initDatabase() {
     CREATE TABLE IF NOT EXISTS mod_actions (id INTEGER PRIMARY KEY AUTOINCREMENT, guildId TEXT, userId TEXT, moderatorId TEXT, type TEXT, channelId TEXT, minutes INTEGER DEFAULT 0, reason TEXT, createdAt TEXT);
     CREATE TABLE IF NOT EXISTS mod_permissions (guildId TEXT, userId TEXT, action TEXT, PRIMARY KEY(guildId,userId,action));
     CREATE TABLE IF NOT EXISTS guardian_quarantine (guildId TEXT, userId TEXT, roles TEXT, quarantinedAt TEXT, PRIMARY KEY(guildId,userId));
+    CREATE TABLE IF NOT EXISTS quarantine_permissions (guildId TEXT, userId TEXT, grantedAt TEXT, PRIMARY KEY(guildId,userId));
   `);
   console.log('✅ Veritabanı hazır.');
 }
@@ -154,6 +156,26 @@ function getModSummary(gid,uid) {
 function saveQuarantineRoles(gid,uid,rolesJson) { db.prepare('INSERT OR REPLACE INTO guardian_quarantine(guildId,userId,roles,quarantinedAt)VALUES(?,?,?,?)').run(gid,uid,rolesJson,nowTR()); }
 function getQuarantineRoles(gid,uid)            { return db.prepare('SELECT roles FROM guardian_quarantine WHERE guildId=? AND userId=?').get(gid,uid); }
 function clearQuarantineRoles(gid,uid)          { db.prepare('DELETE FROM guardian_quarantine WHERE guildId=? AND userId=?').run(gid,uid); }
+
+// ── Karantina kaldırma yetkisi (owner olmayanlara özel yetki) ─
+function grantQuarantinePermission(gid, userId) {
+  db.prepare('INSERT OR REPLACE INTO quarantine_permissions(guildId,userId,grantedAt)VALUES(?,?,?)').run(gid,userId,nowTR());
+}
+function revokeQuarantinePermission(gid, userId) {
+  db.prepare('DELETE FROM quarantine_permissions WHERE guildId=? AND userId=?').run(gid,userId);
+}
+function hasQuarantinePermission(gid, userId) {
+  return !!db.prepare('SELECT 1 FROM quarantine_permissions WHERE guildId=? AND userId=?').get(gid,userId);
+}
+function getAllQuarantinePermissions(gid) {
+  return db.prepare('SELECT userId, grantedAt FROM quarantine_permissions WHERE guildId=? ORDER BY grantedAt DESC').all(gid);
+}
+// Owner'lar + kendisine /karantina-yetki-ver ile yetki verilmiş kullanıcılar karantina kaldırabilir.
+function hasQuarantineAccess(userId, member) {
+  if (hasOwnerAccess(userId, member)) return true;
+  if (member && hasQuarantinePermission(member.guild.id, userId)) return true;
+  return false;
+}
 
 function getOpenTicket(gid,uid)    { return db.prepare("SELECT * FROM tickets WHERE guildId=? AND userId=? AND status='open'").get(gid,uid); }
 function createTicket(gid,uid,cid) { db.prepare('INSERT INTO tickets(guildId,userId,channelId,status,createdAt)VALUES(?,?,?,?,?)').run(gid,uid,cid,'open',nowTR()); }
@@ -229,6 +251,17 @@ const SLASH_COMMANDS = [
     .addSubcommand(s=>s.setName('kaldir')
       .setDescription('Bir kullanıcının karantinasını kaldır, eski rollerini geri ver')
       .addUserOption(o=>o.setName('kullanici').setDescription('Karantinadan çıkarılacak kullanıcı').setRequired(true))),
+  new SlashCommandBuilder().setName('karantina-yetki-ver')
+    .setDescription('[OWNER] Bir kullanıcıya karantina kaldırma yetkisi ver')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addUserOption(o=>o.setName('kullanici').setDescription('Yetki verilecek kullanıcı').setRequired(true)),
+  new SlashCommandBuilder().setName('karantina-yetki-al')
+    .setDescription('[OWNER] Bir kullanıcının karantina kaldırma yetkisini geri al')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addUserOption(o=>o.setName('kullanici').setDescription('Yetkisi alınacak kullanıcı').setRequired(true)),
+  new SlashCommandBuilder().setName('karantina-yetki-listele')
+    .setDescription('[OWNER] Karantina kaldırma yetkisi olan kullanıcıları listele')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 ].map(c => c.toJSON());
 
 // ──────────────────────────────────────────────────────────────
@@ -334,12 +367,12 @@ async function handleUnauthorizedBot(member) {
   } catch (e) { console.error('[GuardianShield] handleUnauthorizedBot genel hata:', e); }
 }
 
-// Hesap yaşı 14 günden küçükse karantina rolü ver ve logla
+// Hesap yaşı 30 günden (1 ay) küçükse karantina rolü ver ve logla
 async function handleQuarantineCheck(member) {
   try {
     const guild = member.guild;
     const accountAgeDays = (Date.now() - member.user.createdTimestamp) / 86400000;
-    if (accountAgeDays >= 14) return; // güvenli hesap, dokunma
+    if (accountAgeDays >= QUARANTINE_MIN_ACCOUNT_AGE_DAYS) return; // güvenli hesap, dokunma
     if (!QUARANTINE_ROLE_ID) return;
 
     // Karantinadan önceki rolleri kaydet (geri vermek için), sonra TEK istekte
@@ -347,7 +380,7 @@ async function handleQuarantineCheck(member) {
     const previousRoleIds = [...member.roles.cache.keys()].filter(id => id !== guild.id);
     try {
       saveQuarantineRoles(guild.id, member.id, JSON.stringify(previousRoleIds));
-      await member.roles.set([QUARANTINE_ROLE_ID], 'Hesap yaşı 14 günden küçük (otomatik karantina).');
+      await member.roles.set([QUARANTINE_ROLE_ID], `Hesap yaşı ${QUARANTINE_MIN_ACCOUNT_AGE_DAYS} günden küçük (otomatik karantina).`);
     } catch (e) {
       console.error('[GuardianShield] Karantina rolü ayarlanamadı:', e);
     }
@@ -366,7 +399,7 @@ async function handleQuarantineCheck(member) {
         { name: 'Kullanıcı ID', value: `${member.user.id}`, inline: true },
         { name: 'Hesap Oluşturulma Tarihi', value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:F>` },
         { name: 'Hesap Yaşı', value: `${accountAgeDays.toFixed(1)} gün`, inline: true },
-        { name: 'Sebep', value: 'Hesap yaşı 14 günden küçük.' },
+        { name: 'Sebep', value: `Hesap yaşı ${QUARANTINE_MIN_ACCOUNT_AGE_DAYS} günden küçük.` },
         { name: 'Not', value: `Eski rolleri (${previousRoleIds.length} adet) kaydedildi, karantina kaldırılınca otomatik geri verilecek.` }
       )
       .setTimestamp();
@@ -474,7 +507,7 @@ Merhaba {etiket}! 🌸
 });
 
 // ──────────────────────────────────────────────────────────────
-//  🛡️ GUARDIAN SHIELD — Owner Bot Koruması + 14 Gün Karantina
+//  🛡️ GUARDIAN SHIELD — Owner Bot Koruması + 30 Gün (1 Ay) Karantina
 // ──────────────────────────────────────────────────────────────
 client.on('guildMemberAdd', async member => {
   try {
@@ -742,8 +775,8 @@ client.on('interactionCreate', async interaction => {
 
     // ── 🛡️ GUARDIAN SHIELD: KARANTİNA KALDIRMA BUTONU (panel) ──
     if (interaction.isButton() && interaction.customId.startsWith('guardian_release_')) {
-      if (!hasOwnerAccess(interaction.user.id, interaction.member)) {
-        return interaction.reply({ ephemeral: true, content: '⛔ Karantina kaldırma sadece ownerlara özeldir.' });
+      if (!hasQuarantineAccess(interaction.user.id, interaction.member)) {
+        return interaction.reply({ ephemeral: true, content: '⛔ Karantina kaldırma yetkin yok. Ownerlar veya `/karantina-yetki-ver` ile yetkilendirilmiş kullanıcılar kullanabilir.' });
       }
       const targetId = interaction.customId.replace('guardian_release_', '');
       const targetMember = await interaction.guild.members.fetch(targetId).catch(() => null);
@@ -821,7 +854,10 @@ client.on('interactionCreate', async interaction => {
 • \`/yetkial kullanici: islem:\` — Mod yetkisini geri al
 • \`/yetki-liste\` — Sunucudaki yetki listesi
 • \`/karantina kur kanal:\` — Karantinadakilerin göreceği tek kanalı ayarla [OWNER]
-• \`/karantina kaldir kullanici:\` — Karantinayı kaldır, eski rolleri geri ver [OWNER]
+• \`/karantina kaldir kullanici:\` — Karantinayı kaldır, eski rolleri geri ver [OWNER / yetkili]
+• \`/karantina-yetki-ver kullanici:\` — Kullanıcıya karantina kaldırma yetkisi ver [OWNER]
+• \`/karantina-yetki-al kullanici:\` — Karantina kaldırma yetkisini geri al [OWNER]
+• \`/karantina-yetki-listele\` — Karantina kaldırma yetkisi olanları listele [OWNER]
 • \`/setup\` — Bot ayarları (admin)
 
 **! Prefix Komutları:** \`!yardım\` yazarak tam listeyi gör.`});
@@ -1093,11 +1129,11 @@ client.on('interactionCreate', async interaction => {
 
     // ── 🛡️ /karantina ────────────────────────────────────────
     if (cmd === 'karantina') {
-      if (!hasOwnerAccess(uid, interaction.member)) {
-        return interaction.reply({ephemeral:true, content:'⛔ Bu komutu sadece ownerlar kullanabilir.'});
-      }
-
       if (sub === 'kur') {
+        // Kanal ayarı sunucu genelinde etkili olduğu için sadece ownerlar yapabilir.
+        if (!hasOwnerAccess(uid, interaction.member)) {
+          return interaction.reply({ephemeral:true, content:'⛔ Bu komutu sadece ownerlar kullanabilir.'});
+        }
         if (!QUARANTINE_ROLE_ID) return interaction.reply({ephemeral:true, content:'⛔ QUARANTINE_ROLE_ID ayarlanmamış.'});
         const visibleChannel = interaction.options.getChannel('kanal');
         const role = interaction.guild.roles.cache.get(QUARANTINE_ROLE_ID) || await interaction.guild.roles.fetch(QUARANTINE_ROLE_ID).catch(() => null);
@@ -1134,6 +1170,10 @@ client.on('interactionCreate', async interaction => {
       }
 
       if (sub === 'kaldir') {
+        // Ownerlar veya /karantina-yetki-ver ile yetki verilmiş kullanıcılar karantina kaldırabilir.
+        if (!hasQuarantineAccess(uid, interaction.member)) {
+          return interaction.reply({ephemeral:true, content:'⛔ Karantina kaldırma yetkin yok. Ownerlar veya `/karantina-yetki-ver` ile yetkilendirilmiş kullanıcılar kullanabilir.'});
+        }
         const target = interaction.options.getUser('kullanici');
         const targetMember = await interaction.guild.members.fetch(target.id).catch(() => null);
         if (!targetMember) return interaction.reply({ephemeral:true, content:'⛔ Kullanıcı sunucuda bulunamadı.'});
@@ -1145,6 +1185,58 @@ client.on('interactionCreate', async interaction => {
           return interaction.reply({ephemeral:true, content:'⛔ Karantina kaldırılırken hata oluştu.'});
         }
       }
+    }
+
+    // ── 🛡️ /karantina-yetki-ver ──────────────────────────────
+    if (cmd === 'karantina-yetki-ver') {
+      if (!hasOwnerAccess(uid, interaction.member)) {
+        return interaction.reply({ephemeral:true, content:'⛔ Bu komutu sadece ownerlar kullanabilir.'});
+      }
+      const target = interaction.options.getUser('kullanici');
+      grantQuarantinePermission(gid, target.id);
+      const embed = new EmbedBuilder()
+        .setTitle('🔓 Karantina Yetkisi Verildi')
+        .setColor(0x57F287)
+        .addFields(
+          {name:'👤 Kullanıcı', value:`<@${target.id}> (${target.tag})`},
+          {name:'🔑 Yetki', value:'Karantina kaldırma (buton + `/karantina kaldir`)'}
+        )
+        .setFooter({text:`Yetkiyi veren: ${interaction.user.tag}`})
+        .setTimestamp();
+      return interaction.reply({embeds:[embed]});
+    }
+
+    // ── 🛡️ /karantina-yetki-al ───────────────────────────────
+    if (cmd === 'karantina-yetki-al') {
+      if (!hasOwnerAccess(uid, interaction.member)) {
+        return interaction.reply({ephemeral:true, content:'⛔ Bu komutu sadece ownerlar kullanabilir.'});
+      }
+      const target = interaction.options.getUser('kullanici');
+      revokeQuarantinePermission(gid, target.id);
+      const embed = new EmbedBuilder()
+        .setTitle('🗑️ Karantina Yetkisi Alındı')
+        .setColor(0xED4245)
+        .addFields({name:'👤 Kullanıcı', value:`<@${target.id}> (${target.tag})`})
+        .setFooter({text:`Yetkiyi alan: ${interaction.user.tag}`})
+        .setTimestamp();
+      return interaction.reply({embeds:[embed]});
+    }
+
+    // ── 🛡️ /karantina-yetki-listele ──────────────────────────
+    if (cmd === 'karantina-yetki-listele') {
+      if (!hasOwnerAccess(uid, interaction.member)) {
+        return interaction.reply({ephemeral:true, content:'⛔ Bu komutu sadece ownerlar kullanabilir.'});
+      }
+      const perms = getAllQuarantinePermissions(gid);
+      if (!perms.length) return interaction.reply({ephemeral:true, content:'ℹ️ Bu sunucuda karantina kaldırma yetkisi verilmiş kimse yok.'});
+      const lines = perms.map(p => `<@${p.userId}> — verildi: ${p.grantedAt}`);
+      const embed = new EmbedBuilder()
+        .setTitle('🛡️ Karantina Kaldırma Yetkisi Olanlar')
+        .setColor(0x5865F2)
+        .setDescription(lines.slice(0,20).join('\n'))
+        .setFooter({text:`Toplam ${perms.length} kullanıcı`})
+        .setTimestamp();
+      return interaction.reply({embeds:[embed], ephemeral:true});
     }
 
   } catch (e) {
